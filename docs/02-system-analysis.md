@@ -9,7 +9,8 @@ This document records what the analysis found and what was decided. `system-arch
 
 - The architecture holds. The changes are in the data model and in a set of supporting features the UX specification needs.
 - The "existing Nahj entitlement contract" that the specs refer to is partly present in `nahj_backend`. Section 2 documents it and proposes a baseline, so entitlement work no longer waits for a missing document.
-- Lifetime already exists: it is a 36,500-day VIP pass sold in both stores. The marketplace reuses it and adds only the Lifetime-holder rules (section 3).
+- The entitlement contract is confirmed (section 2.3): every purchase is an order in the existing `nahj_backend` order flow, days × 24 h, new time added to the end, codes start at redemption, and refunds subtract the order's days. One detail is open: subtracting full or unused days.
+- Lifetime is subscription time: a one-time, long-duration VIP item whose length the business sets (section 3).
 - Six data-model changes were accepted (section 4), and the missing ledger events are resolved (section 5).
 - Every gap from the UX specification has a resolution (section 6).
 - The marketplace uses its own schema on the same MySQL server (section 7).
@@ -44,23 +45,30 @@ These matter because the grants work builds on this code.
 | 4 | No transactions or unique constraints in these flows. | Concurrent purchases or replayed notifications can apply time twice. |
 | 5 | Expiry granularity is 12 hours. | Access can outlive its expiry by up to 12 hours. |
 
-The grants model in section 3 fixes 1–4 by design. Defect 5 goes away once access is read from the computed projection instead of from a row that a job deletes.
+The per-order model in section 2.3 fixes 1–4 by design. Defect 5 goes away once access is read from the computed projection instead of from a row that a job deletes.
 
-### 2.3 Proposed baseline contract (for product-owner confirmation)
+### 2.3 Entitlement contract (decision 7)
 
-This writes down today's behaviour, with the defects fixed, as the "existing contract" the specs require.
+This writes down today's behaviour, with the defects fixed, as the "existing contract" the specs require. Product-owner answers of 2026-10-18 are marked.
 
-1. **Coverage.** V1 has one coverage: VIP. Every plan (Monthly, Yearly, Lifetime) grants VIP.
-2. **Duration.** A timed plan grants `durationInDays × 24 hours`. The day count is catalog data (for example 30 and 365), not calendar months.
-3. **Grants.** Every source of access is its own grant: a store purchase, a marketplace unit, an admin exception, a migrated legacy row.
-4. **Stacking.** Grants are replayed in activation order. Each timed grant starts at `max(its activation time, end of the previous grant)` and runs for its duration. The result is the effective expiry.
-5. **Revocation.** A refund or chargeback revokes one grant, and the projection is recomputed from the grants. Nothing is subtracted from a single expiry, and other purchases keep their days. Two options for the time already used:
-   - **3a (recommended):** the revoked grant counts until the moment of revocation, and later grants move up to start then. Example: 30 days from Jan 1 and a code redeemed Jan 10; the first is refunded Jan 15, so the code's 30 days run Jan 15 → Feb 14.
-   - **3b:** the revoked grant is ignored entirely, and the surviving grants are replayed from their activation times. In the same example the code runs Jan 10 → Feb 9.
-6. **Unused codes.** Time starts at redemption, not at payment.
-7. **Offline grace.** None, as today. If the apps already cache access offline, that cache is the grace period and should be documented by the mobile team.
-8. **Compatibility.** `nahj_backend` keeps writing `user_subscription` and `users.user_type` as a cache of the projection, so the current apps keep working until they read the projection.
-9. **Legacy No-Ads.** No new No-Ads grants. Existing active or suspended No-Ads rows are migrated once into paused grants that resume after VIP, which is the intended behaviour. If there are none in production, skip this.
+1. **Coverage.** V1 has one coverage: VIP. Every item grants VIP.
+2. **One record per purchase: the existing `orders` flow.** *Confirmed.* Every source of VIP time is one row in the existing `nahj_backend` `orders` table: store purchases (as today), marketplace units, admin exception grants. `client_order_id` is already unique, so for a marketplace unit it is the unit ID, which makes the call idempotent. The marketplace calls an internal endpoint that runs the same initiate-and-complete logic (`OrderProcess`) inside one transaction. This replaces the separate `access_grants` table proposed earlier. Changes needed on `orders`:
+   - `source` (`store`, `marketplace`, `admin`, `legacy`) and the source reference;
+   - `duration_days`, copied from the item at completion;
+   - `start_time` and `end_time` holding the real VIP period of that order (today both are set to the insert time);
+   - correct `amount` and `currency` (today `amount` is 0 and the price is written into `currency`);
+   - `refunded_at` and `refunded_days`.
+3. **Duration.** *Confirmed.* An item grants `durationInDays × 24 hours`. Monthly is exactly 30 days, not a calendar month.
+4. **Stacking.** *Confirmed.* New time starts at the end of the current VIP time, or now if there is none. Example: Monthly on Jan 1 and another Monthly on Jan 10 give VIP until Mar 2.
+5. **Unused codes.** *Confirmed.* A code's days start when it is redeemed, not when it was paid for.
+6. **Refund.** *Confirmed: the refunded order's days are subtracted from the subscription.* **Open detail:** subtract the order's **full** days, or only its **unused** days?
+   - **Unused days (recommended).** Subtract `max(0, end_time − max(start_time, now))` of the refunded order. Later orders of the user move earlier by the same amount, and the order is marked refunded.
+   - **Full days.** Subtract the order's whole `duration_days` from the expiry.
+   - Why unused: full subtraction charges days the user already used against their *other* purchases. A late refund or chargeback of an order that has already ended would cut, or wipe, a newer purchase. Example: Monthly A Jan 1–31; Monthly C bought Mar 1 runs to Mar 31; A is refunded Mar 5. Full subtraction ends VIP on Mar 1, so the paid order C gives nothing. Unused subtraction removes 0 days, because A was fully used, and C is untouched. The specs also forbid this ("never subtract blindly from one expiry", "protect unrelated grants").
+   - How much money is returned for used days is a refund-policy question (open question 7), not a subscription-time question.
+7. **Offline grace.** *Confirmed: option A.* Nothing new. The app keeps its current offline behaviour, and the mobile team documents it.
+8. **Compatibility.** `nahj_backend` keeps writing `user_subscription` and `users.user_type` after every change, so the current apps keep working.
+9. **Legacy No-Ads.** No new No-Ads orders. Existing active or suspended No-Ads rows are migrated once, so that they resume after VIP. If there are none in production, skip this.
 
 ## 3. Lifetime
 
@@ -90,18 +98,19 @@ The live VIP products, from `GET /v1/shop/products?category=vip_pass` (the same 
 | A Lifetime refund must not erase the account's other grants. | Dev Ref §5.3; T11 |
 | Results show "Lifetime access" or "No expiry date" instead of a date. | UX C10.3, C11, N01.3 |
 
-### 3.3 Definition (revised)
+### 3.3 Definition
 
-1. **Grant.** Lifetime stays a 36,500-day grant with the same stacking rule as every pass. The catalog marks the plan `is_lifetime`, and the grant records it. No new algorithm is needed, which matches D03.
-2. **Meaning.** VIP for as long as the Nahj account exists. It cannot be transferred after activation, and an unused Lifetime code can be given away. Deleting the account ends it. The Terms should say "lifetime of the account"; the 100 years is the technical representation.
-3. **Lifetime holder.** An account holds Lifetime while it has an active, unrevoked `is_lifetime` grant. The projection then returns the Lifetime marker instead of the 2126 date.
-4. **Existing time is not lost.** A Lifetime grant is stacked after the user's remaining time, like any pass, so the remaining days are used first. No separate pause logic is needed.
-5. **Refund or chargeback of Lifetime.** Only that grant is revoked. Under the revocation rule (section 2.3 item 5, option 3a), it counts until the revocation, and any later grants move up. Nothing else is touched.
-6. **What a Lifetime holder can do.**
+1. **Lifetime is subscription time.** *Confirmed.* Lifetime is a one-time purchase of a long VIP period. Its length is the item's `durationInDays`, which the business sets: today 36,500 days, and it could be 10 or 40 years. It stacks and is refunded like any other order (section 2.3). No new algorithm is needed, which matches D03.
+2. **Lifetime holder.** The catalog marks the plan `is_lifetime`, and the order records it. An account is a Lifetime holder while it has a completed, unrefunded `is_lifetime` order whose period has not ended.
+3. **Existing time is not lost.** A Lifetime order is stacked after the user's remaining time, so the remaining days are used first.
+4. **Refund of Lifetime.** Only that order's days are subtracted, using the refund rule in section 2.3 item 6.
+5. **What a Lifetime holder can do.** *Confirmed.*
    - Directly activating or redeeming VIP onto their own account: rejected, and the code is kept.
    - Buying codes for others: allowed.
-   - In the apps: VIP store purchases should be hidden. A store purchase that still arrives is stacked after the Lifetime grant and stays visible to Support.
-7. **Compatibility.** `user_subscription.expired_at` keeps the real computed date (about 100 years ahead), exactly as today. The apps only need to show "Lifetime" for it. They may already do this; the mobile team should confirm.
+   - In the apps: VIP store purchases are hidden. A store purchase that still arrives is stacked after the Lifetime period and stays visible to Support.
+6. **Open details:**
+   - **Display.** Should the app and web show "Lifetime" without a date, or "Lifetime (until 18 Oct 2036)"? The specs ask for a "Lifetime" label with no date.
+   - **Name versus length.** If Lifetime lasts a fixed time such as 10 years, calling it "Lifetime" without saying so can be treated as misleading under Indonesian consumer-protection law (UU 8/1999). Either keep the period very long (as today, 100 years), or disclose the real length in the product description and Terms.
 
 ### 3.4 Problems in the current product data
 
@@ -120,13 +129,12 @@ The live VIP products, from `GET /v1/shop/products?category=vip_pass` (the same 
 - **Read through the API, not the database.** The marketplace reads items from `GET /v1/shop/products?category=vip_pass` with its own Keycloak service-account token (client credentials). It does not use a user's token, and it does not read the game DB, so the schema boundary in section 7 holds.
 - **Snapshot.** When Super Admin publishes a plan version, the marketplace copies `itemId`, `durationInDays` and `is_lifetime` into it. Orders snapshot the plan version, so a later item change never changes a sold unit.
 - **Grant.** Create-grant sends the `itemId` and the snapshotted days. `nahj_backend` rejects a mismatch instead of guessing.
-- **Which items the web sells** is catalog configuration. The specs name Monthly, Yearly and Lifetime; Weekly and 6-Month can be added without code changes.
+- **Which items the web sells** is catalog configuration. *Confirmed:* all five (Weekly, Monthly, 6-Month, Yearly, Lifetime). `vip_test_pack` is excluded.
 
-### 3.6 Questions for the product owner
+### 3.6 Questions
 
-- Confirm Lifetime = the existing 36,500-day pass, meaning "for the life of the account".
-- Which VIP items does the marketplace sell: only Monthly, Yearly and Lifetime, or also Weekly and 6-Month?
-- Mobile team: do the apps already show "Lifetime" for this pass, and do they hide VIP purchases for a Lifetime holder?
+- Lifetime display and naming: section 3.3 item 6.
+- Mobile team: do the apps hide VIP purchases for a Lifetime holder?
 - Store team: problems 1–3 in section 3.4.
 
 ## 4. Accepted data-model changes
@@ -134,7 +142,7 @@ The live VIP products, from `GET /v1/shop/products?category=vip_pass` (the same 
 | # | Change | Form |
 | --- | --- | --- |
 | 1 | Replacement orders | `orders.replaces_order_id`. A sale request is claimed once (`sale_requests.claimed_by_account_id`, `claimed_at`). A unique key on `(sale_request_id, active_flag)` allows one active order per request; replaced orders clear the flag. |
-| 2 | Grants without a unit | `access_grants.source_type` (`unit`, `admin_exception`, `store`, `legacy`) and `source_id`, unique on `(source_type, source_id)`. The grants table lives in `nahj_backend`. The marketplace keeps `entitlement_grants` as its local record of the calls it made. |
+| 2 | Grants without a unit | Every grant is an order in the existing `nahj_backend` `orders` table, with `source` (`store`, `marketplace`, `admin`, `legacy`) and `client_order_id` as the unique source reference (section 2.3 item 2). An admin exception grant is an `admin` order with no payment. The marketplace keeps `entitlement_grants` as its local record of the calls it made. |
 | 3 | Scoped holds | `risk_cases` plus `holds(scope, subject_type, subject_id, risk_case_id, placed_by, released_at)`. Scopes: `new_sales`, `directory`, `commission_release`, `withdrawal`, `unit`, `payment`. This replaces `seller_holds`. |
 | 4 | Generic approvals | `approval_requests(type, subject, payload, initiator, approver, status, reason)`. A check constraint plus application logic ensures approver ≠ initiator. The approved payload is frozen, and executing it requires the stored version. |
 | 5 | Quotes | `sale_quotes(sale_request_id, catalog_version, unit_price, quantity, total, expires_at, version)` and `withdrawal_fee_quotes(seller, amount, method, fee, net, expires_at)`. An order and a withdrawal each reference the quote they accepted. |
@@ -257,7 +265,7 @@ Each item below is now in `system-architecture.md`.
 | Cost | Same server, so there is no extra instance and no extra network hop. |
 | Future | The schema can move to its own instance later without code changes. |
 
-What this means for `script/db.sql`: it is the game schema (`nahj`) and stays a reference for the integration work. The new `access_grants` table belongs there, because `nahj_backend` owns it. All marketplace tables go into `backend/migrations/` of this project and are created in `nahj_market`.
+What this means for `script/db.sql`: it is the game schema (`nahj`) and stays a reference for the integration work. The new columns on its `orders` table (section 2.3 item 2) belong there, because `nahj_backend` owns them. All marketplace tables go into `backend/migrations/` of this project and are created in `nahj_market`.
 
 ## 8. Source documents
 
@@ -265,7 +273,7 @@ What this means for `script/db.sql`: it is the game schema (`nahj`) and stays a 
 
 ## 9. Remaining open questions
 
-1. Confirm the baseline entitlement contract (section 2.3) and the Lifetime definition (section 3.3). Also: which VIP items the web sells (section 3.6).
+1. Entitlement: refund subtracts full or unused days (section 2.3 item 6); Lifetime display and naming (section 3.3 item 6).
 2. Are there production rows with No-Ads active or suspended that need migration?
 3. Which payment and payout providers? One provider that does both QRIS/VA pay-in and disbursement would reduce the integration work.
 4. Commercial values: prices, commission rate, referral target and rate, withdrawal fee, validity periods, quantity cap.

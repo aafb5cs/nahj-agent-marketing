@@ -118,7 +118,7 @@ MySQL 8 on the existing Cloud SQL server, in its **own schema `nahj_market`** wi
 - Each project owns its migration history.
 - Same server, so no extra cost; the schema can move to its own instance later without code changes.
 
-`script/db.sql` is a reference dump of the game schema. The only new table on the game side is `access_grants`, owned and migrated by `nahj_backend`.
+`script/db.sql` is a reference dump of the game schema. On the game side the only schema change is new columns on `orders`, owned and migrated by `nahj_backend`.
 
 ### 4.5 Supporting services (all existing)
 
@@ -221,7 +221,7 @@ Main column decisions:
 | One provider transaction is processed once | Unique key on `(provider, provider_transaction_id)` and on `provider_events.event_id` |
 | Exactly the ordered number of units | Unique key on `(order_id, unit_index)` |
 | At most one live code per unused unit | Unique key on `(unit_id, live_flag)` where only live rows carry the flag |
-| One grant per source | Unique key on `(source_type, source_id)` in `nahj_backend.access_grants` and in `entitlement_grants` |
+| One grant per source | Unique `client_order_id` on `nahj_backend.orders` (the unit or source ID), and a unique source key in `entitlement_grants` |
 | A command runs once | Unique key on `operations.idempotency_key` |
 | Ledger entries are created once per business event | Unique key on `(journal_type, source_id)` |
 | The same loss is never reversed twice | `purchased_units.reversible_amount` locked and reduced in the reversal transaction |
@@ -339,9 +339,9 @@ New internal endpoints in `nahj_backend`, reachable only from the marketplace an
 | Get account | Confirm the account exists and is not a guest (`user_type` 0); return display name and masked email (email comes from Keycloak). |
 | Find account by email | Admin customer lookup. Returns the account ID only. |
 | Get VIP items | Existing `GET /v1/shop/products?category=vip_pass`, called with the marketplace's Keycloak service-account token. Used when Super Admin publishes a plan version. |
-| Create grant | Add access for one source: account, `itemId`, snapshotted days, `is_lifetime`, `source_type` and `source_id`. Rejects a mismatch with the item. Idempotent on the source; a repeat returns the original result. |
-| Revoke grant | Remove one specific grant after a refund or chargeback and recompute access. Idempotent. |
-| List grants | All grants of an account across sources (store, marketplace, admin), for "My Subscription" history and Support. |
+| Create grant | Complete an order for one source through the existing order flow: account, `itemId`, snapshotted days, `is_lifetime`, `source` and `client_order_id`. Rejects a mismatch with the item. Idempotent on `client_order_id`; a repeat returns the original result. |
+| Refund grant | Mark one order refunded after a refund or chargeback and subtract its days under the refund rule (§8.2). Idempotent. |
+| List grants | All VIP orders of an account across sources (store, marketplace, admin), for "My Subscription" history and Support. |
 | Get access projection | Account ID, projection version, coverage, active flag, expiry or Lifetime marker, evaluation time. Used for redeem preview and for "My Subscription". |
 | Send notification | Deliver an in-app or push hint to the account's devices. |
 
@@ -359,13 +359,16 @@ Today access is one `user_subscription` row per pass plus `users.user_type`. Sto
 
 Required changes:
 
-- **`access_grants` table**: one row per source of access with `source_type` (`store`, `unit`, `admin_exception`, `legacy`), `source_id`, `item_id`, coverage, duration days, `is_lifetime`, activated and revoked times. Unique on `(source_type, source_id)`. Store purchases write grants too, so there is one calculation.
-- **Projection rule (baseline contract, pending product-owner confirmation)**:
-  - Replay the surviving grants in activation order. Each timed grant starts at `max(activation, end of previous)` and lasts its days × 24 hours.
-  - A revoked grant counts until the moment of revocation, and later grants move up (option 3a, recommended; see analysis §2.3).
-- **Lifetime** already exists as the store item `vip_pass_lifetime`: a 36,500-day pass that stacks like any other. The marketplace reuses it. While an account has an active `is_lifetime` grant, the projection returns the Lifetime marker; the account cannot directly activate or redeem more VIP, but can buy codes for others. A store refund revokes only that grant. See analysis §3.
-- **Compatibility cache**: after every change, write `user_subscription` (with the real computed expiry; for Lifetime about 100 years ahead, as today) and `users.user_type`, so the existing apps keep working.
-- **Legacy No-Ads**: existing active or suspended rows migrate once to paused grants that resume after VIP.
+- **Per-purchase records in the existing `orders` table** (confirmed): every source of VIP time is one order with `source` (`store`, `marketplace`, `admin`, `legacy`). `client_order_id` is the unique source reference; for a marketplace unit it is the unit ID. Add `duration_days`, the real VIP `start_time` and `end_time`, correct `amount` and `currency`, `refunded_at` and `refunded_days`.
+- **Grant** = an internal endpoint that runs the existing initiate-and-complete logic (`OrderProcess`) in one transaction, idempotent on `client_order_id`.
+- **Rules** (confirmed; analysis §2.3):
+  - days × 24 hours;
+  - new time starts at the end of current VIP time, or now;
+  - a code's days start at redemption.
+- **Refund** (confirmed) subtracts the refunded order's days from the subscription. Open detail: full or unused days. The recommendation is unused days, `max(0, end_time − max(start_time, now))`, with the user's later orders moved earlier by the same amount, so a late refund never cuts a newer purchase.
+- **Lifetime** is subscription time: a one-time, long-duration item (today `vip_pass_lifetime`, 36,500 days; the business sets the length). While an account has an active `is_lifetime` order, it cannot directly activate or redeem more VIP for itself, but can buy codes for others. Display and naming are open (analysis §3.3).
+- **Compatibility cache**: after every change, write `user_subscription` (the computed expiry) and `users.user_type`, so the existing apps keep working.
+- **Legacy No-Ads**: existing active or suspended rows are migrated once so they resume after VIP.
 - **Defects to fix**: the expiry job never resets `user_type` for existing users; the store refund handler resets `user_type` without revoking the specific purchase and crashes when no order is found; the flows have no transactions or unique constraints.
 - **The apps refresh the projection** on sign in, on resume and when a push hint arrives.
 
@@ -462,13 +465,14 @@ Required changes:
 | 4 | Step-up MFA for sellers: Keycloak TOTP re-authentication | Recommended | Backend, Keycloak setup |
 | 5 | Payment provider | Open | Payment adapter, refund mechanism, settlement timestamp |
 | 6 | Payout provider | Open | Wallet adapter, fees |
-| 7 | Entitlement contract: per-source grants with the baseline projection rule (§8.2) | Proposed, awaiting product-owner confirmation | Game backend, mobile apps |
+| 7 | Entitlement contract: one order per purchase in the existing order flow; days × 24 h; stack at end; codes start at redemption; refund subtracts the order's days; no new offline grace (§8.2) | Confirmed 2026-10-18; open detail: full or unused days on refund | Game backend, mobile apps |
 | 8 | Code and order reference formats | Open | Backend, copy |
 | 9 | Languages for V1 | Open; translation layer from day one | Frontend, emails |
 | 10 | Queue technology: MySQL-backed outbox and jobs; no broker in V1 | Decided | Operations |
 | 11 | Database: separate schema `nahj_market` on the same server | Decided | Operations, security |
-| 12 | Lifetime = the existing 36,500-day `vip_pass_lifetime` item, meaning "for the life of the account"; sold on web and in stores | Sales channels decided; meaning awaits product-owner confirmation | Game backend, mobile apps, Terms |
+| 12 | Lifetime = a one-time, long-duration VIP item (length set by the business, today 36,500 days); Lifetime holders cannot add VIP to their own account; sold on web and in stores | Confirmed 2026-10-18; open: display ("Lifetime" vs date) and naming if the length is fixed | Game backend, mobile apps, Terms |
 | 14 | Marketplace plans reference `nahj_backend` items by `itemId`, read through the API, with IDR prices in the marketplace catalog | Decided | Catalog, entitlement |
+| 15 | Web sells all five VIP items: Weekly, Monthly, 6-Month, Yearly, Lifetime | Confirmed 2026-10-18 | Catalog |
 | 13 | Withdrawal approval: every withdrawal through Finance; second approver above a threshold | Decided (UX A11) | Wallet |
 
 ## 14. Build order
@@ -476,7 +480,7 @@ Required changes:
 1. **Foundation**: project skeleton, migrations, identity and sessions, capabilities, idempotency, rate limits, audit, approvals, holds and risk cases, policy acceptances, outbox, jobs and job runs.
 2. **Catalog and sellers**: versioned configuration, seller application, onboarding and approval, profile revisions, public marketplace.
 3. **Sales and payment**: sale requests, quotes, orders and replacements, payment attempts with a fake provider, acceptance and reconciliation, receipts.
-4. **Fulfillment and entitlement**: units, codes, redeem, the grants table and projection in `nahj_backend` on the baseline contract, the 30-minute job.
+4. **Fulfillment and entitlement**: units, codes, redeem, the order-flow changes and grant endpoints in `nahj_backend`, the 30-minute job.
 5. **Ledger and wallet**: accounts and journals, commission, maturity, withdrawals with a fake payout provider.
 6. **Refunds and disputes.**
 7. **Referrals.**
