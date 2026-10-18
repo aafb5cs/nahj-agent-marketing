@@ -136,7 +136,7 @@ One Go module, one package per domain under `internal/`. A package exposes comma
 | Module | Owns |
 | --- | --- |
 | `identity` | Sessions, bearer-token verification, account lookup, staff, staff invitations, capabilities, MFA step-up, security events, rate limits. |
-| `catalog` | Versioned plans, prices, commission rates, referral rules, market settings. Draft, scheduled and published versions; never edits a published one. |
+| `catalog` | Versioned plans (each references a `nahj_backend` VIP `itemId` and snapshots its days and `is_lifetime`), IDR prices, commission rates, referral rules, market settings. Draft, scheduled and published versions; never edits a published one. |
 | `content` | Policy versions and acceptances, help articles. |
 | `seller` | Applications and evidence, onboarding, public profile revisions, operating status (active, paused, suspended), directory. |
 | `risk` | Risk cases and scoped holds (new sales, directory, commission release, withdrawal, unit, payment). |
@@ -338,7 +338,8 @@ New internal endpoints in `nahj_backend`, reachable only from the marketplace an
 | --- | --- |
 | Get account | Confirm the account exists and is not a guest (`user_type` 0); return display name and masked email (email comes from Keycloak). |
 | Find account by email | Admin customer lookup. Returns the account ID only. |
-| Create grant | Add access for one source: account, plan, duration in days or Lifetime, `source_type` and `source_id`. Idempotent on the source; a repeat returns the original result. |
+| Get VIP items | Existing `GET /v1/shop/products?category=vip_pass`, called with the marketplace's Keycloak service-account token. Used when Super Admin publishes a plan version. |
+| Create grant | Add access for one source: account, `itemId`, snapshotted days, `is_lifetime`, `source_type` and `source_id`. Rejects a mismatch with the item. Idempotent on the source; a repeat returns the original result. |
 | Revoke grant | Remove one specific grant after a refund or chargeback and recompute access. Idempotent. |
 | List grants | All grants of an account across sources (store, marketplace, admin), for "My Subscription" history and Support. |
 | Get access projection | Account ID, projection version, coverage, active flag, expiry or Lifetime marker, evaluation time. Used for redeem preview and for "My Subscription". |
@@ -358,13 +359,12 @@ Today access is one `user_subscription` row per pass plus `users.user_type`. Sto
 
 Required changes:
 
-- **`access_grants` table**: one row per source of access with `source_type` (`store`, `unit`, `admin_exception`, `legacy`), `source_id`, plan, coverage, duration days or Lifetime, activated and revoked times. Unique on `(source_type, source_id)`. Store purchases write grants too, so there is one calculation.
+- **`access_grants` table**: one row per source of access with `source_type` (`store`, `unit`, `admin_exception`, `legacy`), `source_id`, `item_id`, coverage, duration days, `is_lifetime`, activated and revoked times. Unique on `(source_type, source_id)`. Store purchases write grants too, so there is one calculation.
 - **Projection rule (baseline contract, pending product-owner confirmation)**:
   - Replay the surviving grants in activation order. Each timed grant starts at `max(activation, end of previous)` and lasts its days × 24 hours.
-  - An active Lifetime grant makes the projection Lifetime. Timed grants under it are paused and keep their remaining time.
-  - A revoked Lifetime grant counts as covering activation to revocation; paused time resumes after the revocation.
-- **Lifetime** is sold on the web and in the app stores. The store flow writes a Lifetime grant, and a store refund revokes only that grant. A Lifetime holder cannot directly activate or redeem more VIP; codes for others are still allowed.
-- **Compatibility cache**: after every change, write `user_subscription` (Lifetime as `expired_at = 2200-01-01`) and `users.user_type`, so the existing apps keep working. The apps need a small change to show "Lifetime".
+  - A revoked grant counts until the moment of revocation, and later grants move up (option 3a, recommended; see analysis §2.3).
+- **Lifetime** already exists as the store item `vip_pass_lifetime`: a 36,500-day pass that stacks like any other. The marketplace reuses it. While an account has an active `is_lifetime` grant, the projection returns the Lifetime marker; the account cannot directly activate or redeem more VIP, but can buy codes for others. A store refund revokes only that grant. See analysis §3.
+- **Compatibility cache**: after every change, write `user_subscription` (with the real computed expiry; for Lifetime about 100 years ahead, as today) and `users.user_type`, so the existing apps keep working.
 - **Legacy No-Ads**: existing active or suspended rows migrate once to paused grants that resume after VIP.
 - **Defects to fix**: the expiry job never resets `user_type` for existing users; the store refund handler resets `user_type` without revoking the specific purchase and crashes when no order is found; the flows have no transactions or unique constraints.
 - **The apps refresh the projection** on sign in, on resume and when a push hint arrives.
@@ -467,7 +467,8 @@ Required changes:
 | 9 | Languages for V1 | Open; translation layer from day one | Frontend, emails |
 | 10 | Queue technology: MySQL-backed outbox and jobs; no broker in V1 | Decided | Operations |
 | 11 | Database: separate schema `nahj_market` on the same server | Decided | Operations, security |
-| 12 | Lifetime: web and app stores; "for the life of the account" | Sales channels decided; meaning awaits product-owner confirmation | Game backend, mobile apps, Terms |
+| 12 | Lifetime = the existing 36,500-day `vip_pass_lifetime` item, meaning "for the life of the account"; sold on web and in stores | Sales channels decided; meaning awaits product-owner confirmation | Game backend, mobile apps, Terms |
+| 14 | Marketplace plans reference `nahj_backend` items by `itemId`, read through the API, with IDR prices in the marketplace catalog | Decided | Catalog, entitlement |
 | 13 | Withdrawal approval: every withdrawal through Finance; second approver above a threshold | Decided (UX A11) | Wallet |
 
 ## 14. Build order
