@@ -62,7 +62,9 @@ This writes down today's behaviour, with the defects fixed, as the "existing con
 4. **Stacking.** *Confirmed.* New time starts at the end of the current VIP time, or now if there is none. Example: Monthly on Jan 1 and another Monthly on Jan 10 give VIP until Mar 2.
 5. **Unused codes.** *Confirmed.* A code's days start when it is redeemed, not when it was paid for.
 6. **Refund.** *Confirmed 2026-10-20.*
-   - **Early refunds are accepted and late refunds are refused.** The refund window (how long after payment, or after redemption for a code) is a refund-policy value and is still open (section 9).
+   - **Early refunds are accepted and late refunds are refused.** *Working assumption (2026-10-20):* the window is **48 hours after activation**, meaning after the code is redeemed or the direct activation is applied. It is the versioned catalog setting `refund_window_hours = 48`, snapshotted on each order. After the window, a buyer's refund request is refused; Finance can still make an exception with an approval.
+   - **Unused codes** (never redeemed) have no activation time, so the 48-hour rule does not cover them. Open: are they refundable at any time, or only within a period after payment?
+   - **Store purchases** follow Google and Apple refund rules, not this window. Their refunds arrive as store notifications and use the same days rule below.
    - **Days removed:** the refunded order's **unused** days, `max(0, end_time − max(start_time, now))`. Later orders of the user move earlier by the same amount, and the order is marked refunded. For an early refund this is almost the whole order. A code that was never redeemed has no days to remove; it is simply voided.
    - **Chargebacks cannot be refused.** The payment provider can reverse a payment at any time. The same unused-days rule applies, so a late chargeback of an order that has already ended removes no days and never cuts a newer purchase. Finance handles the money loss, and Support can review the account.
 7. **Offline grace.** *Confirmed: option A.* Nothing new. The app keeps its current offline behaviour, and the mobile team documents it.
@@ -269,7 +271,7 @@ What this means for `script/db.sql`: it is the game schema (`nahj`) and stays a 
 
 ## 9. Remaining open questions
 
-1. Refund window: how long after payment (or after redemption for a code) a refund is still "early" and accepted (section 2.3 item 6).
+1. Refund of unused codes: at any time, or only within a period after payment? The window for used subscriptions is assumed to be 48 hours after activation (section 2.3 item 6).
 2. Are there production rows with No-Ads active or suspended that need migration?
 3. Which payment and payout providers? One provider that does both QRIS/VA pay-in and disbursement would reduce the integration work.
 4. Commercial values: prices, commission rate, referral target and rate, withdrawal fee, validity periods, quantity cap.

@@ -365,7 +365,7 @@ Required changes:
   - days × 24 hours;
   - new time starts at the end of current VIP time, or now;
   - a code's days start at redemption.
-- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the window is a refund-policy value. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
+- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the assumed window is 48 hours after activation (catalog setting `refund_window_hours`, snapshotted on the order); the rule for unused codes is open; store purchases follow Google and Apple rules. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
 - **Lifetime** is subscription time: the one-time item `vip_pass_lifetime`, kept at 36,500 days (100 years) to avoid misleading-naming risk. It is shown with its real date, for example "Lifetime · until 20 Oct 2126". While an account has an active `is_lifetime` order, it cannot directly activate or redeem more VIP for itself, but can buy codes for others.
 - **Compatibility cache**: after every change, write `user_subscription` (the computed expiry) and `users.user_type`, so the existing apps keep working.
 - **Legacy No-Ads**: existing active or suspended rows are migrated once so they resume after VIP.
