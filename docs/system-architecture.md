@@ -365,8 +365,8 @@ Required changes:
   - days × 24 hours;
   - new time starts at the end of current VIP time, or now;
   - a code's days start at redemption.
-- **Refund** (confirmed) subtracts the refunded order's days from the subscription. Open detail: full or unused days. The recommendation is unused days, `max(0, end_time − max(start_time, now))`, with the user's later orders moved earlier by the same amount, so a late refund never cuts a newer purchase.
-- **Lifetime** is subscription time: a one-time, long-duration item (today `vip_pass_lifetime`, 36,500 days; the business sets the length). While an account has an active `is_lifetime` order, it cannot directly activate or redeem more VIP for itself, but can buy codes for others. Display and naming are open (analysis §3.3).
+- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the window is a refund-policy value. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
+- **Lifetime** is subscription time: the one-time item `vip_pass_lifetime`, kept at 36,500 days (100 years) to avoid misleading-naming risk. It is shown with its real date, for example "Lifetime · until 20 Oct 2126". While an account has an active `is_lifetime` order, it cannot directly activate or redeem more VIP for itself, but can buy codes for others.
 - **Compatibility cache**: after every change, write `user_subscription` (the computed expiry) and `users.user_type`, so the existing apps keep working.
 - **Legacy No-Ads**: existing active or suspended rows are migrated once so they resume after VIP.
 - **Defects to fix**: the expiry job never resets `user_type` for existing users; the store refund handler resets `user_type` without revoking the specific purchase and crashes when no order is found; the flows have no transactions or unique constraints.
@@ -465,12 +465,12 @@ Required changes:
 | 4 | Step-up MFA for sellers: Keycloak TOTP re-authentication | Recommended | Backend, Keycloak setup |
 | 5 | Payment provider | Open | Payment adapter, refund mechanism, settlement timestamp |
 | 6 | Payout provider | Open | Wallet adapter, fees |
-| 7 | Entitlement contract: one order per purchase in the existing order flow; days × 24 h; stack at end; codes start at redemption; refund subtracts the order's days; no new offline grace (§8.2) | Confirmed 2026-10-18; open detail: full or unused days on refund | Game backend, mobile apps |
+| 7 | Entitlement contract: one order per purchase in the existing order flow; days × 24 h; stack at end; codes start at redemption; refund subtracts the order's days; no new offline grace (§8.2) | Confirmed 2026-10-20 (refund removes unused days; early refunds only) | Game backend, mobile apps |
 | 8 | Code and order reference formats | Open | Backend, copy |
 | 9 | Languages for V1 | Open; translation layer from day one | Frontend, emails |
 | 10 | Queue technology: MySQL-backed outbox and jobs; no broker in V1 | Decided | Operations |
 | 11 | Database: separate schema `nahj_market` on the same server | Decided | Operations, security |
-| 12 | Lifetime = a one-time, long-duration VIP item (length set by the business, today 36,500 days); Lifetime holders cannot add VIP to their own account; sold on web and in stores | Confirmed 2026-10-18; open: display ("Lifetime" vs date) and naming if the length is fixed | Game backend, mobile apps, Terms |
+| 12 | Lifetime = the one-time 36,500-day (100-year) VIP item, shown with its date; Lifetime holders cannot add VIP to their own account; sold on web and in stores | Confirmed 2026-10-20 | Game backend, mobile apps, Terms |
 | 14 | Marketplace plans reference `nahj_backend` items by `itemId`, read through the API, with IDR prices in the marketplace catalog | Decided | Catalog, entitlement |
 | 15 | Web sells all five VIP items: Weekly, Monthly, 6-Month, Yearly, Lifetime | Confirmed 2026-10-18 | Catalog |
 | 13 | Withdrawal approval: every withdrawal through Finance; second approver above a threshold | Decided (UX A11) | Wallet |

@@ -61,11 +61,10 @@ This writes down today's behaviour, with the defects fixed, as the "existing con
 3. **Duration.** *Confirmed.* An item grants `durationInDays × 24 hours`. Monthly is exactly 30 days, not a calendar month.
 4. **Stacking.** *Confirmed.* New time starts at the end of the current VIP time, or now if there is none. Example: Monthly on Jan 1 and another Monthly on Jan 10 give VIP until Mar 2.
 5. **Unused codes.** *Confirmed.* A code's days start when it is redeemed, not when it was paid for.
-6. **Refund.** *Confirmed: the refunded order's days are subtracted from the subscription.* **Open detail:** subtract the order's **full** days, or only its **unused** days?
-   - **Unused days (recommended).** Subtract `max(0, end_time − max(start_time, now))` of the refunded order. Later orders of the user move earlier by the same amount, and the order is marked refunded.
-   - **Full days.** Subtract the order's whole `duration_days` from the expiry.
-   - Why unused: full subtraction charges days the user already used against their *other* purchases. A late refund or chargeback of an order that has already ended would cut, or wipe, a newer purchase. Example: Monthly A Jan 1–31; Monthly C bought Mar 1 runs to Mar 31; A is refunded Mar 5. Full subtraction ends VIP on Mar 1, so the paid order C gives nothing. Unused subtraction removes 0 days, because A was fully used, and C is untouched. The specs also forbid this ("never subtract blindly from one expiry", "protect unrelated grants").
-   - How much money is returned for used days is a refund-policy question (open question 7), not a subscription-time question.
+6. **Refund.** *Confirmed 2026-10-20.*
+   - **Early refunds are accepted and late refunds are refused.** The refund window (how long after payment, or after redemption for a code) is a refund-policy value and is still open (section 9).
+   - **Days removed:** the refunded order's **unused** days, `max(0, end_time − max(start_time, now))`. Later orders of the user move earlier by the same amount, and the order is marked refunded. For an early refund this is almost the whole order. A code that was never redeemed has no days to remove; it is simply voided.
+   - **Chargebacks cannot be refused.** The payment provider can reverse a payment at any time. The same unused-days rule applies, so a late chargeback of an order that has already ended removes no days and never cuts a newer purchase. Finance handles the money loss, and Support can review the account.
 7. **Offline grace.** *Confirmed: option A.* Nothing new. The app keeps its current offline behaviour, and the mobile team documents it.
 8. **Compatibility.** `nahj_backend` keeps writing `user_subscription` and `users.user_type` after every change, so the current apps keep working.
 9. **Legacy No-Ads.** No new No-Ads orders. Existing active or suspended No-Ads rows are migrated once, so that they resume after VIP. If there are none in production, skip this.
@@ -100,7 +99,7 @@ The live VIP products, from `GET /v1/shop/products?category=vip_pass` (the same 
 
 ### 3.3 Definition
 
-1. **Lifetime is subscription time.** *Confirmed.* Lifetime is a one-time purchase of a long VIP period. Its length is the item's `durationInDays`, which the business sets: today 36,500 days, and it could be 10 or 40 years. It stacks and is refunded like any other order (section 2.3). No new algorithm is needed, which matches D03.
+1. **Lifetime is subscription time.** *Confirmed.* Lifetime is a one-time purchase of a long VIP period, kept at **36,500 days (100 years)** to avoid misleading-naming risk under Indonesian consumer-protection law (UU 8/1999). Its length is the item's `durationInDays`. It stacks and is refunded like any other order (section 2.3). No new algorithm is needed, which matches D03.
 2. **Lifetime holder.** The catalog marks the plan `is_lifetime`, and the order records it. An account is a Lifetime holder while it has a completed, unrefunded `is_lifetime` order whose period has not ended.
 3. **Existing time is not lost.** A Lifetime order is stacked after the user's remaining time, so the remaining days are used first.
 4. **Refund of Lifetime.** Only that order's days are subtracted, using the refund rule in section 2.3 item 6.
@@ -108,9 +107,7 @@ The live VIP products, from `GET /v1/shop/products?category=vip_pass` (the same 
    - Directly activating or redeeming VIP onto their own account: rejected, and the code is kept.
    - Buying codes for others: allowed.
    - In the apps: VIP store purchases are hidden. A store purchase that still arrives is stacked after the Lifetime period and stays visible to Support.
-6. **Open details:**
-   - **Display.** Should the app and web show "Lifetime" without a date, or "Lifetime (until 18 Oct 2036)"? The specs ask for a "Lifetime" label with no date.
-   - **Name versus length.** If Lifetime lasts a fixed time such as 10 years, calling it "Lifetime" without saying so can be treated as misleading under Indonesian consumer-protection law (UU 8/1999). Either keep the period very long (as today, 100 years), or disclose the real length in the product description and Terms.
+6. **Display.** *Confirmed 2026-10-20:* show the real expiry date, with the Lifetime label. Example: "Lifetime · until 20 Oct 2126". The projection returns both the date and an `is_lifetime` flag.
 
 ### 3.4 Problems in the current product data
 
@@ -133,7 +130,6 @@ The live VIP products, from `GET /v1/shop/products?category=vip_pass` (the same 
 
 ### 3.6 Questions
 
-- Lifetime display and naming: section 3.3 item 6.
 - Mobile team: do the apps hide VIP purchases for a Lifetime holder?
 - Store team: problems 1–3 in section 3.4.
 
@@ -273,7 +269,7 @@ What this means for `script/db.sql`: it is the game schema (`nahj`) and stays a 
 
 ## 9. Remaining open questions
 
-1. Entitlement: refund subtracts full or unused days (section 2.3 item 6); Lifetime display and naming (section 3.3 item 6).
+1. Refund window: how long after payment (or after redemption for a code) a refund is still "early" and accepted (section 2.3 item 6).
 2. Are there production rows with No-Ads active or suspended that need migration?
 3. Which payment and payout providers? One provider that does both QRIS/VA pay-in and disbursement would reduce the integration work.
 4. Commercial values: prices, commission rate, referral target and rate, withdrawal fee, validity periods, quantity cap.
