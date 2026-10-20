@@ -186,7 +186,7 @@ agent_marketing/
 | seller | `seller_applications`, `application_revisions`, `application_evidence`, `sellers`, `seller_onboarding`, `seller_profiles`, `seller_profile_revisions`, `reserved_names` |
 | risk | `risk_cases`, `holds` |
 | approval | `approval_requests` |
-| sales | `sale_requests`, `sale_request_events`, `sale_quotes`, `orders` |
+| sales | `customers`, `sale_requests`, `sale_request_events`, `sale_quotes`, `orders` |
 | payment | `payment_attempts`, `provider_events`, `payment_cases` |
 | fulfillment | `purchased_units`, `activation_credentials`, `deliveries`, `share_events`, `redemptions` |
 | entitlement | `entitlement_grants` (local record of calls to `nahj_backend`) |
@@ -284,6 +284,40 @@ Rules:
 - Files expire after a configured period (default 24 hours) and are purged by a job.
 - A code export is a fulfillment action: it publishes the exported codes to the buyer portal (D08) and is audited per code.
 
+### 6.7 Buyers and bulk purchases
+
+A bulk buyer is not a separate kind of user. It is any customer whose order has quantity > 1, which always means codes. A parent, a school or a company uses the same Nahj account and the same tables. V1 has no organization accounts and no child roster (the spec forbids exposing recipients).
+
+```mermaid
+erDiagram
+    customers ||--o{ orders : places
+    sellers ||--o{ orders : "attributed to"
+    sale_requests ||--o| orders : "claimed as"
+    sale_quotes ||--o{ orders : "snapshot of"
+    orders ||--o{ purchased_units : "has 1..quantity"
+    orders ||--o{ payment_attempts : "paid by"
+    purchased_units ||--o{ activation_credentials : "code, replacement chain"
+    activation_credentials ||--o| redemptions : "used by"
+    purchased_units ||--o| entitlement_grants : "VIP time"
+    orders ||--o{ deliveries : "published via"
+    orders ||--o{ refunds : ""
+    refunds ||--o{ refund_units : "selects"
+    purchased_units ||--o{ refund_units : ""
+```
+
+| Table | Key columns | Notes |
+| --- | --- | --- |
+| `customers` | `account_id` (Keycloak `sub`, PK), `display_name`, `email_masked`, `status`, `risk_flag`, `first_order_at`, `last_order_at` | Marketplace-side profile, created on first sign-in. Not an identity store: Keycloak and `nahj_backend` stay the source. |
+| `orders` | `id`, `reference`, `buyer_account_id`, `seller_id`, `sale_request_id`, `quote_id`, `plan_version_id`, `item_id`, `duration_days`, `is_lifetime`, `quantity`, `unit_price`, `total`, `currency`, `fulfillment_mode` (`direct`, `codes`), `payment_status`, `fulfillment_status`, `refund_status`, `payment_confirmed_at`, `fulfillment_due_at`, `refund_window_hours`, `unused_refund_days`, `accepted_policy_versions`, `replaces_order_id`, `version` | `fulfillment_mode = direct` requires `quantity = 1`. |
+| `purchased_units` | `id`, `order_id`, `unit_index`, `unit_price`, `commission_amount`, `referral_amount`, `reversible_amount`, `status` (`awaiting_fulfillment`, `issued`, `redeemed`, `activated`, `reserved`, `refunded`, `voided`), `activated_account_id`, `activated_at`, `refund_deadline_at` | Unique `(order_id, unit_index)`. `refund_deadline_at` is payment + unused-code period while unused, and activation + 48 h once used. |
+| `activation_credentials` | `id`, `unit_id`, `code_hash`, `code_encrypted`, `status` (`live`, `consumed`, `voided`), `replaces_credential_id`, `published_at`, `revealed_count` | At most one `live` credential per unit. |
+| `redemptions` | `id`, `credential_id`, `account_id`, `operation_key`, `result`, `created_at` | Unique per credential. A same-account retry returns the stored result. |
+| `entitlement_grants` | `unit_id`, `account_id`, `client_order_id`, `status`, `vip_start`, `vip_end`, `refunded_days` | Local mirror of the order created in `nahj_backend`. |
+| `deliveries` | `id`, `order_id`, `unit_ids`, `channel` (`portal`, `email`, `copy`, `share`, `export`), `actor`, `status`, `created_at` | Portal publication is the delivery; email is a separate status. |
+| `refunds`, `refund_units` | refund amount, reason, status, provider command; selected units and the amount per unit | A bulk refund selects only units that are still refundable. |
+
+**Bulk refund rule (confirmed 2026-10-21):** a bulk buyer can refund the units whose codes were never redeemed. Redeemed units follow the 48-hour rule from their own activation. Example: 10 codes, 4 redeemed more than 48 hours ago, 6 unused → the 6 can be refunded, at their original unit price and commission (T12).
+
 ## 7. Identity and security
 
 ### 7.1 Sign in
@@ -365,10 +399,10 @@ Required changes:
   - days × 24 hours;
   - new time starts at the end of current VIP time, or now;
   - a code's days start at redemption.
-- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the assumed window is 48 hours after activation (catalog setting `refund_window_hours`, snapshotted on the order); the rule for unused codes is open; store purchases follow Google and Apple rules. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
+- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the assumed window is 48 hours after activation (catalog setting `refund_window_hours`, snapshotted on the order); unused codes are refundable within an unused-code period after payment (assumed 7 days, catalog setting); store purchases follow Google and Apple rules. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
 - **Lifetime** is subscription time: the one-time item `vip_pass_lifetime`, kept at 36,500 days (100 years) to avoid misleading-naming risk. It is shown with its real date, for example "Lifetime · until 20 Oct 2126". While an account has an active `is_lifetime` order, it cannot directly activate or redeem more VIP for itself, but can buy codes for others.
 - **Compatibility cache**: after every change, write `user_subscription` (the computed expiry) and `users.user_type`, so the existing apps keep working.
-- **Legacy No-Ads**: existing active or suspended rows are migrated once so they resume after VIP.
+- **No-Ads is removed** (confirmed 2026-10-21): ads were removed from the game, so No-Ads has no value. No migration is needed. Remaining No-Ads rows are left to expire, and `user_type` 2 is no longer written.
 - **Defects to fix**: the expiry job never resets `user_type` for existing users; the store refund handler resets `user_type` without revoking the specific purchase and crashes when no order is found; the flows have no transactions or unique constraints.
 - **The apps refresh the projection** on sign in, on resume and when a push hint arrives.
 
