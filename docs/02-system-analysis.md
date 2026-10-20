@@ -63,7 +63,11 @@ This writes down today's behaviour, with the defects fixed, as the "existing con
 5. **Unused codes.** *Confirmed.* A code's days start when it is redeemed, not when it was paid for.
 6. **Refund.** *Confirmed 2026-10-20.*
    - **Early refunds are accepted and late refunds are refused.** *Working assumption (2026-10-20):* the window is **48 hours after activation**, meaning after the code is redeemed or the direct activation is applied. It is the versioned catalog setting `refund_window_hours = 48`, snapshotted on each order. After the window, a buyer's refund request is refused; Finance can still make an exception with an approval.
-   - **Unused codes** (never redeemed): *confirmed 2026-10-21* that they are refundable. A bulk buyer can return the codes that were never used, and keep the used ones. *Working assumption:* within 7 days after payment (`unused_refund_days = 7`). This applies to every plan, including Weekly, because an unused code's days have not started.
+   - **Unused codes** (never redeemed): *confirmed 2026-10-21.* A bulk buyer can return the codes that were never used, and keep the used ones. The period is **30 days after payment**, a configurable setting (`unused_refund_days = 30`). It applies to every plan, including Weekly, because an unused code's days have not started.
+   - **Commission on codes** (confirmed 2026-10-21). A code unit's commission is released at the later of two times:
+     - 168 hours after settlement;
+     - the code is redeemed, or its 30-day refund period ends, whichever comes first.
+     So a refunded unused code never has released commission, which prevents seller debt and the buy-commission-refund collusion. Direct activations keep the normal 168-hour rule.
    - **Short plans.** For a redeemed Weekly pass, 48 hours is 2 of its 7 days. The window is therefore a per-plan setting, so Weekly can have a shorter window (for example 24 hours) if needed. The default is 48 hours for all plans.
    - **Store purchases** follow Google and Apple refund rules, not this window. Their refunds arrive as store notifications and use the same days rule below.
    - **Days removed:** the refunded order's **unused** days, `max(0, end_time − max(start_time, now))`. Later orders of the user move earlier by the same amount, and the order is marked refunded. For an early refund this is almost the whole order. A code that was never redeemed has no days to remove; it is simply voided.
@@ -190,7 +194,7 @@ Each journal has a unique key on `(journal_type, source_id)` and links to its bu
 | `payment_accepted` | provider_clearing | sales_revenue | winning payment attempt |
 | `payment_surplus` | provider_clearing | customer_suspense | duplicate or mismatched attempt |
 | `commission_accrued` | commission_expense | seller pending | unit |
-| `commission_matured` | seller pending | seller available | unit |
+| `commission_matured` | seller pending | seller available | unit. For a code unit, only after the code is redeemed or its unused-refund period ends (section 2.3 item 6). |
 | `hold_placed` | seller pending or available | seller held | hold |
 | `hold_released` | seller held | seller pending or available | hold |
 | `referral_awarded` | referral_expense | referrer pending | referral award |
@@ -272,7 +276,7 @@ What this means for `script/db.sql`: it is the game schema (`nahj`) and stays a 
 
 ## 9. Remaining open questions
 
-1. Refund windows (working assumptions): 48 hours after activation for used subscriptions, configurable per plan; 7 days after payment for unused codes (section 2.3 item 6).
+1. ~~Refund windows~~: decided. 48 hours after activation for used subscriptions (configurable per plan); 30 days after payment for unused codes (configurable), with code commission released at redemption or period end (section 2.3 item 6).
 2. ~~No-Ads rows in production~~: resolved, No-Ads is removed (section 2.3 item 9).
 3. Which payment and payout providers? One provider that does both QRIS/VA pay-in and disbursement would reduce the integration work.
 4. Commercial values: prices, commission rate, referral target and rate, withdrawal fee, validity periods, quantity cap.

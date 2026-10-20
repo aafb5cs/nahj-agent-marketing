@@ -250,7 +250,7 @@ Standard double entry; every journal balances. Full design and rationale: `02-sy
 | `payment_accepted` | provider_clearing | sales_revenue |
 | `payment_surplus` | provider_clearing | customer_suspense |
 | `commission_accrued` | commission_expense | seller pending |
-| `commission_matured` (168 h after settlement) | seller pending | seller available |
+| `commission_matured` (168 h after settlement; for a code unit also after redemption or the end of its unused-refund period) | seller pending | seller available |
 | `hold_placed` / `hold_released` | pending or available / held | held / pending or available |
 | `referral_awarded` / `referral_reversed` | referral_expense / referrer bucket | referrer pending / referral_expense |
 | `withdrawal_locked` | seller available | seller locked |
@@ -399,7 +399,7 @@ Required changes:
   - days × 24 hours;
   - new time starts at the end of current VIP time, or now;
   - a code's days start at redemption.
-- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the assumed window is 48 hours after activation (catalog setting `refund_window_hours`, snapshotted on the order); unused codes are refundable within an unused-code period after payment (assumed 7 days, catalog setting); store purchases follow Google and Apple rules. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
+- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the assumed window is 48 hours after activation (catalog setting `refund_window_hours`, snapshotted on the order); unused codes are refundable for 30 days after payment (catalog setting `unused_refund_days`); a code's commission is released only after it is redeemed or that period ends; store purchases follow Google and Apple rules. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
 - **Lifetime** is subscription time: the one-time item `vip_pass_lifetime`, kept at 36,500 days (100 years) to avoid misleading-naming risk. It is shown with its real date, for example "Lifetime · until 20 Oct 2126". While an account has an active `is_lifetime` order, it cannot directly activate or redeem more VIP for itself, but can buy codes for others.
 - **Compatibility cache**: after every change, write `user_subscription` (the computed expiry) and `users.user_type`, so the existing apps keep working.
 - **No-Ads is removed** (confirmed 2026-10-21): ads were removed from the game, so No-Ads has no value. No migration is needed. Remaining No-Ads rows are left to expire, and `user_type` 2 is no longer written.
@@ -415,7 +415,7 @@ Required changes:
 | Fulfillment deadline | At `payment_confirmed_at + 30 min` per order | Completes remaining eligible units through the normal command; respects holds; never resets. |
 | Deadline reminder | At a configured time before each deadline | Reminds the seller; skipped if the order is already fulfilled. |
 | Fulfillment recovery | Every few minutes | Retries failed units; raises an alert for overdue orders. |
-| Commission maturity | Hourly | Releases matured, unheld commission; debt is covered by the release. |
+| Commission maturity | Hourly | Releases matured, unheld commission. Code units wait for redemption or the end of their unused-refund period. Debt is covered by the release. |
 | Referral month close | Start of each Jakarta month, plus on correction | Qualifies periods and posts or reverses awards. |
 | Refund and payout reconciliation | Every few minutes | Queries the original provider command for unknown outcomes. Never resends blindly. |
 | Payout destination verification | Every few minutes | Resolves pending verifications with the payout provider. |
@@ -507,6 +507,7 @@ Required changes:
 | 12 | Lifetime = the one-time 36,500-day (100-year) VIP item, shown with its date; Lifetime holders cannot add VIP to their own account; sold on web and in stores | Confirmed 2026-10-20 | Game backend, mobile apps, Terms |
 | 14 | Marketplace plans reference `nahj_backend` items by `itemId`, read through the API, with IDR prices in the marketplace catalog | Decided | Catalog, entitlement |
 | 15 | Web sells all five VIP items: Weekly, Monthly, 6-Month, Yearly, Lifetime | Confirmed 2026-10-18 | Catalog |
+| 16 | Refund windows: 48 h after activation (per plan); unused codes 30 days after payment; code commission released at redemption or period end. All configurable. | Confirmed 2026-10-21 | Catalog, refund, ledger |
 | 13 | Withdrawal approval: every withdrawal through Finance; second approver above a threshold | Decided (UX A11) | Wallet |
 
 ## 14. Build order
