@@ -187,11 +187,11 @@ agent_marketing/
 | risk | `risk_cases`, `holds` |
 | approval | `approval_requests` |
 | sales | `customers`, `sale_requests`, `sale_request_events`, `sale_quotes`, `orders` |
-| payment | `payment_attempts`, `provider_events`, `payment_cases` |
+| payment | `payment_providers`, `payment_routes`, `payment_attempts`, `provider_events`, `payment_cases` |
 | fulfillment | `purchased_units`, `activation_credentials`, `deliveries`, `share_events`, `redemptions` |
 | entitlement | `entitlement_grants` (local record of calls to `nahj_backend`) |
 | ledger | `ledger_accounts`, `journals`, `postings`, `commissions` |
-| wallet | `payout_destinations`, `withdrawal_fee_quotes`, `withdrawals` |
+| wallet | `payout_providers`, `payout_routes`, `payout_destinations`, `withdrawal_fee_quotes`, `withdrawals`, `payouts` (one row per transfer: seller withdrawal or refund payout) |
 | refund | `refunds`, `refund_units`, `disputes`, `dispute_evidence` |
 | referral | `referral_links`, `referral_periods`, `referral_awards` |
 | support | `cases`, `case_messages`, `case_attachments` |
@@ -317,6 +317,96 @@ erDiagram
 | `refunds`, `refund_units` | refund amount, reason, status, provider command; selected units and the amount per unit | A bulk refund selects only units that are still refundable. |
 
 **Bulk refund rule (confirmed 2026-10-21):** a bulk buyer can refund the units whose codes were never redeemed. Redeemed units follow the 48-hour rule from their own activation. Example: 10 codes, 4 redeemed more than 48 hours ago, 6 unused → the 6 can be refunded, at their original unit price and commission (T12).
+
+### 6.8 Multiple payment and payout providers
+
+V1 starts with **Midtrans and Xendit**, and more providers can be added later. A new provider is one new adapter package plus configuration rows. No change to orders, ledger, fulfillment or refunds.
+
+#### Adapters
+
+Each provider is a Go package under `internal/payment/providers/<name>` (and `internal/wallet/providers/<name>` for payouts) that implements fixed interfaces. The rest of the system only sees these interfaces.
+
+```go
+// Money in.
+type PaymentProvider interface {
+    Code() string                                   // "midtrans", "xendit", "fake"
+    Methods() []Method                              // qris, va_bca, va_bni, gopay, ...
+    CreateAttempt(ctx, AttemptRequest) (AttemptResult, error)   // QR string, VA number, expiry
+    QueryAttempt(ctx, providerRef string) (ProviderStatus, error)
+    ParseWebhook(ctx, headers, body []byte) ([]ProviderEvent, error) // verifies signature first
+    Refund(ctx, RefundRequest) (RefundResult, error)    // ErrRefundNotSupported → payout fallback
+    QueryRefund(ctx, providerRefundRef string) (ProviderStatus, error)
+    Capabilities(method Method) Capabilities         // refund? partial? refund window? min/max
+}
+
+// Money out: seller withdrawals and refund payouts.
+type PayoutProvider interface {
+    Code() string
+    VerifyDestination(ctx, Destination) (VerifyResult, error)  // account-name check
+    Submit(ctx, PayoutRequest) (PayoutResult, error)           // idempotent on our payout ID
+    Query(ctx, providerRef string) (ProviderStatus, error)
+    ParseWebhook(ctx, headers, body []byte) ([]ProviderEvent, error)
+}
+```
+
+Rules every adapter follows:
+
+- It maps the provider's statuses to our fixed set (`pending`, `succeeded`, `failed`, `expired`, `unknown`). It never decides business outcomes; the payment module does.
+- It sends our attempt, refund or payout ID as the provider's idempotency key or reference, so a retry never creates a second charge or transfer.
+- It returns the provider's settlement time when the provider reports one. Commission maturity is counted from that time.
+- It stores the raw webhook body in `provider_events` before anything else happens.
+- A `fake` provider implements both interfaces for local development and the acceptance tests.
+
+#### Configuration (data, not code)
+
+| Table | Purpose |
+| --- | --- |
+| `payment_providers` | Code, display name, enabled, environment (sandbox or production), credentials reference in the secret store (never the secret itself), webhook secret reference. |
+| `payment_routes` | Which provider handles which method: `method`, `provider`, `priority`, `enabled`, `min_amount`, `max_amount`, `fee_fixed`, `fee_percent`, `vat_included`. Versioned like the rest of the catalog. |
+| `payout_providers` | Same as `payment_providers`, for money out. |
+| `payout_routes` | Destination type (bank, e-wallet) → provider, priority, fee, limits. |
+
+Example route set for launch:
+
+| Method | Provider | Priority |
+| --- | --- | --- |
+| `qris` | xendit | 1 |
+| `qris` | midtrans | 2 |
+| `va_bca`, `va_bni`, `va_bri`, `va_mandiri`, `va_permata` | xendit | 1 |
+| `gopay` | midtrans | 1 |
+| payouts to banks and e-wallets | xendit | 1 |
+
+#### How routing works
+
+1. **Checkout.** The buyer sees the **methods** (QRIS, BCA VA, GoPay…), not the providers. The server lists every method with an enabled route whose amount limits fit the order.
+2. **Creating an attempt.** The server picks the enabled route with the highest priority for that method and stores `provider` and `route_version` on the `payment_attempts` row.
+3. **Failover.** If the provider is down when the attempt is created, the server tries the next route for the same method. This is safe because nothing was charged yet. An attempt already created is never moved to another provider.
+4. **Everything after creation stays with the original provider.** Webhooks, reconciliation and refunds of an attempt always go to the provider that created it, even if the routes change later.
+5. **Turning a provider off.** Disabling its routes stops new attempts. Existing attempts, refunds and reconciliation continue until they are finished.
+
+#### Webhooks
+
+- One endpoint per provider: `/api/v1/webhooks/{provider}` and `/api/v1/webhooks/payout/{provider}`.
+- The adapter verifies the signature, and the server checks the merchant, amount and currency against the stored attempt (§10.1).
+- Uniqueness is per provider: `(provider, event_id)` and `(provider, provider_transaction_id)`.
+
+#### Refunds across providers
+
+1. Ask the original provider's adapter whether the method supports this refund (full or partial, inside the provider's refund window).
+2. If yes: call `Refund` on that provider.
+3. If not, which is always the case for bank VAs and for some QRIS cases: **refund by payout**. The buyer gives a bank or e-wallet account, the payout route verifies it, and a payout is sent through the payout provider. The refund record keeps `refund_method` (`provider` or `payout`).
+
+#### Ledger and reconciliation
+
+- `provider_clearing` and `payout_funding` are kept **per provider** (for example `provider_clearing:xendit`, `provider_clearing:midtrans`). Each provider's daily report is reconciled against its own account.
+- Fees are recorded per attempt from the route, then corrected to the provider's actual fee during reconciliation.
+
+#### Adding a provider later
+
+1. Write the adapter package and its tests against the provider's sandbox.
+2. Add the provider row and its secrets.
+3. Add routes with low priority or disabled, and test in staging.
+4. Raise the priority or enable the routes in the admin catalog. No deployment of other modules is needed.
 
 ## 7. Identity and security
 
@@ -461,7 +551,7 @@ Required changes:
 ### 10.5 Refund
 
 1. A request changes nothing and opens a support case.
-2. On approval, the affected units are reserved against redeem and fulfillment, `refund_approved` is posted, and one provider refund command is queued.
+2. On approval, the affected units are reserved against redeem and fulfillment, `refund_approved` is posted, and one refund command is queued: to the original provider if it supports this refund, otherwise as a payout to a bank or e-wallet account the buyer provides (always the case for bank VAs; §6.8).
 3. On verified completion: post `refund_completed`; void unused codes or revoke the affected grants; reverse the original commission and referral allocations; requalify the referral month.
 4. A surplus-payment refund posts `surplus_refunded` only. It touches no grant and no seller account.
 
@@ -497,8 +587,8 @@ Required changes:
 | 2 | Frontend stack: React, TypeScript, Vite, one app with three shells | Recommended | Frontend |
 | 3 | Roles: capabilities in the marketplace database; Keycloak for identity and MFA only | Recommended | Backend, Keycloak setup |
 | 4 | Step-up MFA for sellers: Keycloak TOTP re-authentication | Recommended | Backend, Keycloak setup |
-| 5 | Payment provider | Open | Payment adapter, refund mechanism, settlement timestamp |
-| 6 | Payout provider | Open | Wallet adapter, fees |
+| 5 | Payment providers: multi-provider with routing (§6.8); launch with Midtrans and Xendit | Decided 2026-10-23; contracts and quotes pending | Payment adapters, refund mechanism, settlement timestamp |
+| 6 | Payout provider: same multi-provider design; Xendit recommended for payouts | Recommended; pending quotes | Wallet adapter, fees, refund payouts |
 | 7 | Entitlement contract: one order per purchase in the existing order flow; days × 24 h; stack at end; codes start at redemption; refund subtracts the order's days; no new offline grace (§8.2) | Confirmed 2026-10-20 (refund removes unused days; early refunds only) | Game backend, mobile apps |
 | 8 | Code and order reference formats | Open | Backend, copy |
 | 9 | Languages for V1 | Open; translation layer from day one | Frontend, emails |
