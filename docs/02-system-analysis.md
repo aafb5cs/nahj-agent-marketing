@@ -282,3 +282,9 @@ What this means for `script/db.sql`: it is the game schema (`nahj`) and stays a 
 4. Commercial values: prices, commission rate, referral target and rate, withdrawal fee, validity periods, quantity cap.
 5. Is the withdrawal fee returned to the seller when a payout comes back? (Section 5.3 assumes yes.)
 6. Refund policy, seller verification documents, Terms and Privacy, tax treatment, V1 languages.
+
+## 10. Later decisions that change the specification
+
+| Date | Decision | Spec rule changed | Effect |
+| --- | --- | --- | --- |
+| 2026-10-23 | Fulfillment is instant at payment: direct units are activated and codes are published to the buyer automatically. | Dev Ref §5.1 (30-minute seller window, seller and worker share the command); UX seller fulfillment screens; T06–T08 | No deadline job, no deadline reminder, no seller Deliver/Activate step. Seller copy/share of codes is no longer a delivery step. The recovery job and Operations alert stay. Acceptance tests T06–T08 are rewritten for instant fulfillment. |

@@ -283,11 +283,10 @@ CREATE TABLE orders (
   fulfillment_mode        VARCHAR(8)   NOT NULL,            -- direct | codes
   -- independent statuses
   payment_status          VARCHAR(16)  NOT NULL,            -- unpaid, awaiting, checking, paid, attempt_ended
-  fulfillment_status      VARCHAR(16)  NOT NULL,            -- not_started, pending, completed, recovery
+  fulfillment_status      VARCHAR(16)  NOT NULL,            -- not_started, completed, recovery (fulfillment is instant at payment)
   refund_status           VARCHAR(16)  NOT NULL DEFAULT 'none', -- none, requested, processing, partial, full
   winning_attempt_id      BIGINT UNSIGNED NULL UNIQUE,
   payment_confirmed_at    DATETIME(3)  NULL,                -- set once
-  fulfillment_due_at      DATETIME(3)  NULL,                -- payment_confirmed_at + 30 min, never reset
   settled_at              DATETIME(3)  NULL,                -- provider settlement time
   version                 INT          NOT NULL DEFAULT 1,
   created_at              DATETIME(3)  NOT NULL,
@@ -443,8 +442,8 @@ CREATE TABLE refund_units (
 | 2 | The buyer opens the link, signs in, sees a quote | `customers` (if new), `sale_quotes` |
 | 3 | The buyer confirms | One transaction: `sale_requests` → claimed; `orders` (unpaid, snapshot); outbox: none |
 | 4 | The buyer picks QRIS | `payment_attempts` (pending) through the route; QR returned |
-| 5 | The provider webhook says paid | One transaction (§10.1 of the architecture): `provider_events`; order → paid, `payment_confirmed_at`, `fulfillment_due_at = +30 min`; **1** `purchased_units` row (awaiting_fulfillment); ledger `payment_accepted`, `commission_accrued`; jobs: deadline at +30 min, reminder; outbox: notifications |
-| 6 | The seller presses "Activate" (or the job runs at +30 min) | One transaction: unit locked; Lifetime-holder check; `entitlement_grants` (requested); outbox: create-grant call |
+| 5 | The provider webhook says paid | One transaction (§10.1 of the architecture): `provider_events`; order → paid, `payment_confirmed_at`; **1** `purchased_units` row (awaiting_fulfillment); ledger `payment_accepted`, `commission_accrued`; **instant fulfillment:** `entitlement_grants` (requested), outbox: create-grant call with `rejectIfLifetime`; outbox: notifications |
+| 6 | (no seller step) | Fulfillment is instant at payment (decision 17). |
 | 7 | The worker calls `nahj_backend` | `nahj.orders` row `mk-unit-{id}` with its VIP period (§2.3) |
 | 8 | Grant confirmed | `entitlement_grants` → granted, VIP dates stored; unit → activated, `activated_at`, `refund_deadline_at = activated_at + 48 h`; order → completed; outbox: "subscription activated" notification |
 
@@ -453,13 +452,13 @@ CREATE TABLE refund_units (
 | Step | What happens | Rows |
 | --- | --- | --- |
 | 1–4 | As above, with Yearly × 10, codes | `sale_requests`, `sale_quotes`, `orders` (quantity 10), `payment_attempts` |
-| 5 | Payment accepted | **10** `purchased_units` (index 1..10, status issued); **10** `activation_credentials` (live, not yet published); `refund_deadline_at = payment_confirmed_at + 30 days` on each; ledger `commission_accrued` × 10; jobs: deadline, reminder |
-| 6 | The seller delivers some or all codes, or the deadline job delivers the rest at +30 min | `published_at` set on the selected credentials; `deliveries` (portal) and outbox email (single code in the body; a bulk email links to the buyer's purchases) |
+| 5 | Payment accepted | Same transaction: **10** `purchased_units` (index 1..10, status issued); **10** `activation_credentials` (live, `published_at = now`); `refund_deadline_at = payment_confirmed_at + 30 days` on each; ledger `commission_accrued` × 10; `deliveries` (portal, actor `system`); outbox: email linking to "My Purchases"; order fulfillment → completed |
+| 6 | (no seller step) | Codes are visible to the buyer immediately (decision 17). |
 | 7 | The buyer sees 10 codes in "My Purchases" and gives them to children | Reveals are audited; no rows about who received them |
 | 8 | A child redeems code #3 on their own account | One transaction: credential locked → consumed; `redemptions`; unit #3 → redeemed, `activated_account_id`; `entitlement_grants` (requested); outbox: create-grant |
 | 9 | Grant confirmed | Unit #3 → activated, `activated_at`; `refund_deadline_at = activated_at + 48 h`; commission on unit #3 can now be released once 168 h have passed |
 
-The order's fulfillment status is "completed" once every unit has been delivered (published); it does not wait for redemptions.
+The order's fulfillment status is "completed" at payment, when every code is published; it does not wait for redemptions (confirmed 2026-10-23).
 
 ### 4.3 Bulk refund: 4 codes used, refund the other 6
 
@@ -494,5 +493,5 @@ The commission maturity job releases each unit's commission individually with a 
 ## 5. Open points for review
 
 1. Order reference format `NHO-YYMMDD-XXXX` and code format `NHJ-XXXX-XXXX-XXXX`.
-2. Should an order become "completed" when all codes are delivered (as above), or only when all codes are redeemed? The spec says delivery; redemption can take months.
-3. Who changes `nahj_backend` (§2.2–2.6)?
+2. ~~When is an order completed?~~ Decided: at payment; fulfillment is instant (decision 17).
+3. ~~Who changes `nahj_backend`?~~ Decided: a separate session, using `docs/prompts/01-nahj-backend-vip-orders.md`.

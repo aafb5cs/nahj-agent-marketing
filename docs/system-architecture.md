@@ -23,7 +23,7 @@ These come directly from the developer reference and shape every component.
 | Database and providers are not one transaction | External calls go through an outbox. State changes and the intent to call a provider are committed together; a worker performs the call. |
 | Money history is never edited | Balances are derived from an append-only double-entry ledger. Corrections are new compensating entries. |
 | Authorization is by capability and relationship | Checked on the server for every API, export and file, on every request. Hiding a button is not authorization. |
-| Sellers and the worker use the same commands | Automatic completion at +30 minutes calls the same unit-level fulfillment command a seller calls. |
+| Fulfillment is instant and automatic | At payment acceptance the system activates the direct unit or publishes the codes itself (decision 17). Retries and recovery use the same unit-level command. |
 | Sensitive exceptions need a second person | Manual adjustments, large withdrawals, admin grants and configuration changes go through one approval mechanism. |
 
 ## 3. System context
@@ -502,9 +502,7 @@ Required changes:
 | --- | --- | --- |
 | Outbox dispatch | Continuous | Sends queued provider calls, grant calls, Keycloak admin calls, emails and push hints. Retries with backoff. |
 | Payment reconciliation | Every few minutes | Queries the provider for unresolved attempts, including locally expired ones. |
-| Fulfillment deadline | At `payment_confirmed_at + 30 min` per order | Completes remaining eligible units through the normal command; respects holds; never resets. |
-| Deadline reminder | At a configured time before each deadline | Reminds the seller; skipped if the order is already fulfilled. |
-| Fulfillment recovery | Every few minutes | Retries failed units; raises an alert for overdue orders. |
+| Fulfillment recovery | Every minute | Retries units whose instant fulfillment failed (for example `nahj_backend` unreachable); alerts Operations when a paid order is not fulfilled within a configured time. |
 | Commission maturity | Hourly | Releases matured, unheld commission. Code units wait for redemption or the end of their unused-refund period. Debt is covered by the release. |
 | Referral month close | Start of each Jakarta month, plus on correction | Qualifies periods and posts or reverses awards. |
 | Refund and payout reconciliation | Every few minutes | Queries the original provider command for unknown outcomes. Never resends blindly. |
@@ -523,17 +521,21 @@ Required changes:
 
 1. A webhook arrives, or reconciliation polls the provider.
 2. The server verifies authenticity, then merchant, reference, amount and currency against the stored attempt.
-3. In one transaction: store the provider event; lock the order; if it has no winning attempt, set this one, set `payment_confirmed_at` and `fulfillment_due_at`, create the purchased units, post `payment_accepted` and `commission_accrued`, schedule the deadline and reminder jobs, and queue notifications.
+3. In one transaction: store the provider event; lock the order; if it has no winning attempt, set this one, set `payment_confirmed_at`, create the purchased units, post `payment_accepted` and `commission_accrued`, **fulfill at once** (§10.2), and queue notifications.
 4. If the order already has a winner, post `payment_surplus` and open a duplicate-payment case. No new units, no new commission.
 5. If any economic field does not match, post `payment_surplus` and open a mismatch case for Finance. No fulfillment.
 
 ### 10.2 Fulfillment
 
-1. The seller, or the deadline job, calls the unit command for each eligible unit. Holds on the order's units or payment block it.
-2. Direct: queue a create-grant call for the buyer's account; mark the unit fulfilled when the grant is confirmed.
-3. Codes: generate the credential, publish it to the buyer's purchases, queue the email.
-4. The order is complete when every eligible unit is fulfilled. Failures leave the order in recovery with the original deadline.
-5. If the buyer gained Lifetime before a direct unit was fulfilled, the unit is held. With buyer consent, Support converts it to a code or starts a refund review.
+Fulfillment is **instant at payment** (decision 17, 2026-10-23). The 30-minute seller window, the seller "Deliver" and "Activate" steps, the deadline job and the deadline reminder from the specification are not built.
+
+1. In the payment-acceptance transaction, the system calls the unit command for every unit. Holds on the order's units or payment block it; a blocked unit waits for Support or Finance.
+2. Direct: queue a create-grant call with `rejectIfLifetime`; mark the unit activated when `nahj_backend` confirms.
+3. Codes: generate every credential, publish all of them to the buyer's "My Purchases" at once, and queue the email (a single code in the body; a bulk order links to "My Purchases").
+4. The order's fulfillment status is completed when every unit is activated (direct) or published (codes). It does not wait for codes to be redeemed.
+5. Failures (for example `nahj_backend` unreachable) are retried by the recovery job with the same idempotent command. The buyer sees "Paid — activating"; Operations is alerted if it takes too long.
+6. If a direct grant is refused because the buyer became a Lifetime holder after creating the order, the unit is held. With the buyer's consent, Support converts it to a code or starts a refund review.
+7. The seller sees the order as paid and fulfilled, and earns the commission as before.
 
 ### 10.3 Redeem
 
@@ -597,6 +599,7 @@ Required changes:
 | 12 | Lifetime = the one-time 36,500-day (100-year) VIP item, shown with its date; Lifetime holders cannot add VIP to their own account; sold on web and in stores | Confirmed 2026-10-20 | Game backend, mobile apps, Terms |
 | 14 | Marketplace plans reference `nahj_backend` items by `itemId`, read through the API, with IDR prices in the marketplace catalog | Decided | Catalog, entitlement |
 | 15 | Web sells all five VIP items: Weekly, Monthly, 6-Month, Yearly, Lifetime | Confirmed 2026-10-18 | Catalog |
+| 17 | Fulfillment is instant at payment: direct units activated and codes published automatically; no seller delivery step and no 30-minute window | Confirmed 2026-10-23 (changes the approved spec rule Dev Ref §5.1) | Fulfillment, seller screens, jobs, acceptance tests T06–T08 |
 | 16 | Refund windows: 48 h after activation (per plan); unused codes 30 days after payment; code commission released at redemption or period end. All configurable. | Confirmed 2026-10-21 | Catalog, refund, ledger |
 | 13 | Withdrawal approval: every withdrawal through Finance; second approver above a threshold | Decided (UX A11) | Wallet |
 
