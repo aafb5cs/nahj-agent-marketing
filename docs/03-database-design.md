@@ -466,7 +466,7 @@ The order's fulfillment status is "completed" once every unit has been delivered
 | Step | What happens | Rows |
 | --- | --- | --- |
 | 1 | The buyer asks for a refund within 30 days of payment | `refunds` (requested); support case. Nothing is reserved yet. |
-| 2 | Finance reviews | The screen shows only units with status `issued` or `delivered` and `refund_deadline_at > now`: here units 1, 2, 4, 5, 6, 7 |
+| 2 | Finance reviews | The screen shows only unused units (status `issued`) with `refund_deadline_at > now`: here units 1, 2, 4, 5, 6, 7 |
 | 3 | Finance approves the six | One transaction: those six units locked and re-checked (still unused?), → reserved; credentials → voided (they can no longer be redeemed); `refund_units` × 6 with each unit's original price and commission; ledger `refund_approved`; outbox: provider refund, or a payout if the method cannot refund (VA) |
 | 4 | Provider confirms | Units → refunded; `reversible_amount` reduced; ledger `refund_completed`, `commission_reversed` × 6; order `refund_status = partial`; referral month requalified |
 | 5 | Provider fails definitively | Finance retries, or rolls back: units return to their previous status and the credentials are restored, with an audit record |
