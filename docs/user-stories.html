@@ -111,6 +111,19 @@ tr:last-child td { border-bottom: 0; }
 td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .empty { color: var(--muted); padding: 24px; text-align: center; border: 1px dashed var(--line); border-radius: 10px; }
 footer { color: var(--muted); font-size: 0.85rem; }
+.map { display: grid; gap: 14px; }
+.map figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; min-width: 0; }
+.map figcaption { margin-top: 10px; font-size: 0.88rem; color: var(--muted); }
+.map h3 { font-family: var(--display); font-weight: 500; font-size: 1.15rem; margin: 0 0 8px; }
+.diagram { min-height: 120px; display: grid; place-items: center; }
+.diagram svg { max-width: 100%; height: auto; }
+.diagram g.node { cursor: pointer; }
+.diagram .loading, .diagram .failed { color: var(--muted); font-size: 0.9rem; }
+.mapkey { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 0.86rem; color: var(--muted); }
+.mapkey span { display: inline-flex; align-items: center; gap: 6px; }
+.mapkey i { width: 14px; height: 14px; border-radius: 4px; border: 2px solid var(--sw-stroke); background: var(--sw-fill); display: inline-block; }
+.story.flash { outline: 3px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: no-preference) { .story.flash { transition: outline-color 0.6s; } }
 @media (prefers-reduced-motion: no-preference) { .chip { transition: background 0.15s, color 0.15s; } }
 </style>
 
@@ -143,6 +156,22 @@ footer { color: var(--muted); font-size: 0.85rem; }
       <li><span class="n">7</span><span class="who">Seller</span><strong>Withdraws</strong><p>Min Rp500,000, TOTP step-up, Finance queue, payout to bank.</p></li>
       <li><span class="n">8</span><span class="who">Buyer · Finance</span><strong>Refunds unused codes</strong><p>Within 30 days. Commission on those units is reversed.</p></li>
     </ol>
+  </section>
+
+  <section class="map" aria-labelledby="map-title">
+    <div><span class="eyebrow">Story map</span><h2 id="map-title">How the stories connect</h2>
+      <p style="color:var(--muted);max-width:70ch">Each box is a story, colored by role. Arrows show what one story hands to the next. Select a box to jump to its story card.</p></div>
+    <div class="mapkey" id="mapkey" aria-label="Colour key"></div>
+    <figure>
+      <h3>Selling journey</h3>
+      <div class="diagram" id="map0" role="img" aria-label="Story map of the selling journey, from seller application to withdrawal"><p class="loading">Drawing diagram…</p></div>
+      <figcaption>A seller is approved and shares a link. The buyer pays, the system fulfills at once, recipients redeem, and commission flows to the seller's wallet.</figcaption>
+    </figure>
+    <figure>
+      <h3>After the sale, support and control</h3>
+      <div class="diagram" id="map1" role="img" aria-label="Story map of refunds, chargebacks, support, risk controls and admin settings"><p class="loading">Drawing diagram…</p></div>
+      <figcaption>Refunds and chargebacks reverse commission and remove unused VIP days. Support escalates to Nahj staff. Risk holds and admin settings shape what the selling journey allows.</figcaption>
+    </figure>
   </section>
 
   <section class="controls" aria-label="Filter stories">
@@ -311,7 +340,7 @@ let activeRole = "all";
 function esc(s){ return s.replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;" }[c])); }
 
 function storyHTML(s){
-  return `<article class="story" data-text="${esc((s.id+" "+s.title+" "+s.as+" "+s.want+" "+s.so+" "+s.ac.join(" ")+" "+s.refs).toLowerCase())}">
+  return `<article class="story" id="story-${s.id}" data-text="${esc((s.id+" "+s.title+" "+s.as+" "+s.want+" "+s.so+" "+s.ac.join(" ")+" "+s.refs).toLowerCase())}">
     <div class="top"><span class="id">${s.id}</span><span class="tag t-${s.tag}">${TAGS[s.tag]}</span></div>
     <h3>${esc(s.title)}</h3>
     <p class="as">As <em>${esc(s.as)}</em>, I want ${esc(s.want)}, so that ${esc(s.so)}.</p>
@@ -363,4 +392,166 @@ try { const r = localStorage.getItem("nahj-us-role"); if (r && (r === "all" || R
 render();
 document.getElementById("search").addEventListener("input", filter);
 filter();
+</script>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+(function () {
+  var EDGES = [
+`  SEL01 -->|submits| SM01
+  SM01 -->|approves| SEL02
+  SEL02 -->|profile reviewed| SEL03
+  SEL03 -->|listed in| CUS01
+  SEL02 -->|can sell| SEL04
+  SEL04 -->|shares link| CUS02
+  CUS01 -->|picks seller| CUS02
+  CUS02 -->|signed in| CUS03
+  CUS03 -->|confirms| CUS04
+  SYS02 -.->|catches late payments| CUS04
+  CUS04 -->|duplicate or mismatch| FIN01
+  CUS04 -->|paid| SYS01
+  SYS01 -->|direct| CUS05
+  SYS01 -->|codes| CUS06
+  SYS01 -->|order paid and fulfilled| SEL06
+  CUS05 -->|adds VIP time| SYS05
+  CUS06 -->|hands out codes| REC01
+  CUS06 -->|hands out codes| REC02
+  REC01 -->|account has Lifetime| REC03
+  REC01 -->|adds VIP time| SYS05
+  REC02 -->|adds VIP time| SYS05
+  SYS05 -->|shows expiry| CUS07
+  CUS04 -->|receipt| CUS09
+  SYS01 -->|commission per unit| SYS03
+  SYS03 -->|released| SEL07
+  SYS04 -->|month closed| SEL09
+  SEL07 -->|balances| SEL05
+  SEL07 -->|withdraw| SEL08
+  SEL08 -->|queue| FIN03`,
+`  CUS08 -->|request| FIN02
+  FIN02 -->|removes unused days| SYS05
+  FIN02 -->|reverses commission| SEL07
+  FIN04 -->|removes unused days| SYS05
+  FIN04 -->|reverses commission| SEL07
+  FIN05 -->|differences| FIN06
+  FIN06 -->|corrects| SEL07
+  CUS10 -->|first line| SEL10
+  CUS10 -->|direct to Nahj| SUP01
+  SEL10 -->|escalates| SUP01
+  SUP01 -->|leaked code| SUP02
+  SUP01 -->|Lifetime conflict| SUP03
+  SUP01 -->|finds account| SUP04
+  SUP03 -->|or refund review| FIN02
+  SM02 -->|suspension blocks new sales| SEL04
+  SEL11 -->|hides listing| CUS01
+  SM03 -->|holds fulfillment| SYS01
+  SM03 -->|holds release| SYS03
+  SM03 -->|holds withdrawals| SEL08
+  ADM01 -->|prices and windows| CUS03
+  ADM02 -->|routes| CUS04
+  ADM03 -->|gives capabilities| FIN02
+  ADM04 -->|exceptional VIP| SYS05`
+  ];
+  var ROLE_KEY = [
+    ["customer", "Customer"], ["recipient", "Code recipient"], ["seller", "Seller"], ["system", "System"],
+    ["finance", "Finance"], ["support", "Support"], ["sellermgmt", "Seller management"], ["admin", "Super Admin"]
+  ];
+  function isDark() {
+    var t = document.documentElement.getAttribute("data-theme");
+    if (t === "dark") return true;
+    if (t === "light") return false;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  function palette(dark) {
+    return dark ? {
+      ink: "#e6ece8", bg: "#18201c", line: "#6c7a73",
+      customer: ["#1d2a3d", "#7fa3e6"], recipient: ["#1b3036", "#6cc4d4"], seller: ["#33291a", "#e3a64a"],
+      system: ["#1d3029", "#5cc3a5"], finance: ["#2b2238", "#b493de"], support: ["#2e2a1c", "#cdb46a"],
+      sellermgmt: ["#33201f", "#e58a75"], admin: ["#262b29", "#c3cdc7"]
+    } : {
+      ink: "#17201c", bg: "#ffffff", line: "#7d8a83",
+      customer: ["#e4ecfb", "#3b63b8"], recipient: ["#ddf1f4", "#1f7f8f"], seller: ["#f8ecd8", "#b9781a"],
+      system: ["#e2efe9", "#1d6b58"], finance: ["#efe6f7", "#7a4fa6"], support: ["#f4efdc", "#8f7520"],
+      sellermgmt: ["#f6e3de", "#a8432f"], admin: ["#eceeec", "#4a5550"]
+    };
+  }
+  function nodeKey(id) { return id.replace("-", ""); }
+  function label(s) {
+    var t = s.title.replace(/"/g, "'");
+    return nodeKey(s.id) + '["<b>' + s.id + '</b><br/>' + t + '"]';
+  }
+  function build(edges, c) {
+    var used = {};
+    edges.replace(/\b([A-Z]{2,3}\d{2})\b/g, function (m) { used[m] = true; return m; });
+    var lines = ["flowchart LR"];
+    ROLE_KEY.forEach(function (k) {
+      var v = c[k[0]];
+      lines.push("  classDef " + k[0] + " fill:" + v[0] + ",stroke:" + v[1] + ",stroke-width:1.5px,color:" + c.ink);
+    });
+    STORIES.forEach(function (s) {
+      if (used[nodeKey(s.id)]) { lines.push("  " + label(s)); lines.push("  class " + nodeKey(s.id) + " " + s.role); }
+    });
+    lines.push(edges);
+    return lines.join("\n");
+  }
+  function key(c) {
+    document.getElementById("mapkey").innerHTML = ROLE_KEY.map(function (k) {
+      var v = c[k[0]];
+      return '<span><i style="--sw-fill:' + v[0] + ';--sw-stroke:' + v[1] + '"></i>' + k[1] + "</span>";
+    }).join("");
+  }
+  function jump(storyId) {
+    var card = document.getElementById("story-" + storyId);
+    if (!card) return;
+    if (card.hidden) {
+      activeRole = "all"; document.getElementById("search").value = "";
+      document.querySelectorAll(".chip").forEach(function (ch) { ch.setAttribute("aria-pressed", String(ch.dataset.role === "all")); });
+      filter();
+    }
+    card.scrollIntoView({ behavior: "smooth", block: "center" });
+    card.classList.add("flash");
+    setTimeout(function () { card.classList.remove("flash"); }, 1600);
+  }
+  var busy = false;
+  async function draw() {
+    if (busy) return; busy = true;
+    var c = palette(isDark());
+    key(c);
+    if (!window.mermaid) {
+      document.querySelectorAll(".map .diagram").forEach(function (d) { d.innerHTML = '<p class="failed">The diagram library could not load. Reload the page to try again.</p>'; });
+      busy = false; return;
+    }
+    mermaid.initialize({
+      startOnLoad: false, securityLevel: "strict", theme: "base",
+      fontFamily: '"Source Sans 3", "Segoe UI", system-ui, sans-serif',
+      themeVariables: { fontSize: "13px", primaryTextColor: c.ink, textColor: c.ink, lineColor: c.line, background: c.bg, edgeLabelBackground: c.bg, mainBkg: c.system[0], primaryBorderColor: c.system[1] },
+      flowchart: { curve: "basis", htmlLabels: true, nodeSpacing: 26, rankSpacing: 54, padding: 8, useMaxWidth: true }
+    });
+    for (var i = 0; i < EDGES.length; i++) {
+      var target = document.getElementById("map" + i);
+      try {
+        var res = await mermaid.render("sm" + i + "-" + Date.now(), build(EDGES[i], c));
+        target.innerHTML = res.svg;
+        target.querySelectorAll("g.node").forEach(function (g) {
+          var m = /flowchart-([A-Z]{2,3})(\d{2})-/.exec(g.id || "");
+          if (!m) return;
+          var sid = m[1] + "-" + m[2];
+          g.setAttribute("tabindex", "0");
+          g.setAttribute("role", "link");
+          g.setAttribute("aria-label", "Go to story " + sid);
+          g.addEventListener("click", function () { jump(sid); });
+          g.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); jump(sid); } });
+        });
+      } catch (e) {
+        target.innerHTML = '<p class="failed">This diagram could not be drawn.</p>';
+      }
+    }
+    busy = false;
+  }
+  draw();
+  if (window.matchMedia) {
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    if (mq.addEventListener) mq.addEventListener("change", draw);
+  }
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+})();
 </script>
