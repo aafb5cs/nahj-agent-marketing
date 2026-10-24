@@ -479,10 +479,11 @@ filter();
     var t = s.title.replace(/"/g, "'");
     return nodeKey(s.id) + '["<b>' + s.id + '</b><br/>' + t + '"]';
   }
-  function build(edges, c) {
+  var DIRECTION = ["TD", "LR"];
+  function build(edges, c, dir) {
     var used = {};
     edges.replace(/\b([A-Z]{2,3}\d{2})\b/g, function (m) { used[m] = true; return m; });
-    var lines = ["flowchart LR"];
+    var lines = ["flowchart " + dir];
     ROLE_KEY.forEach(function (k) {
       var v = c[k[0]];
       lines.push("  classDef " + k[0] + " fill:" + v[0] + ",stroke:" + v[1] + ",stroke-width:1.5px,color:" + c.ink);
@@ -529,7 +530,7 @@ filter();
     for (var i = 0; i < EDGES.length; i++) {
       var target = document.getElementById("map" + i);
       try {
-        var res = await mermaid.render("sm" + i + "-" + Date.now(), build(EDGES[i], c));
+        var res = await mermaid.render("sm" + i + "-" + Date.now(), build(EDGES[i], c, DIRECTION[i]));
         target.innerHTML = res.svg;
         target.querySelectorAll("g.node").forEach(function (g) {
           var m = /flowchart-([A-Z]{2,3})(\d{2})-/.exec(g.id || "");
