@@ -1,0 +1,310 @@
+<title>Nahj Marketplace Flows</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: an atlas of five flowcharts, one per journey, each with its rules beside it. */
+:root {
+  --bg: #f5f6f2;
+  --surface: #ffffff;
+  --ink: #17201c;
+  --muted: #5a665f;
+  --line: #dbe0d8;
+  --accent: #1d6b58;
+  --accent-soft: #e2efe9;
+  --display: "Bricolage Grotesque", "Segoe UI", system-ui, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --bg: #111714; --surface: #18201c; --ink: #e6ece8; --muted: #9aa8a0; --line: #2b3631; --accent: #5cc3a5; --accent-soft: #1d3029; color-scheme: dark; }
+}
+:root[data-theme="dark"] { --bg: #111714; --surface: #18201c; --ink: #e6ece8; --muted: #9aa8a0; --line: #2b3631; --accent: #5cc3a5; --accent-soft: #1d3029; color-scheme: dark; }
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.55;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+}
+.wrap { max-width: 1180px; margin: 0 auto; display: grid; gap: 44px; }
+h1, h2 { font-family: var(--display); text-wrap: balance; margin: 0; letter-spacing: -0.01em; }
+h1 { font-size: clamp(2rem, 4vw + 1rem, 3rem); font-weight: 700; line-height: 1.05; }
+h2 { font-size: 1.55rem; font-weight: 700; }
+p { margin: 0; }
+.eyebrow { font-family: var(--mono); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+header { display: grid; gap: 12px; }
+header .lede { max-width: 68ch; color: var(--muted); font-size: 1.06rem; }
+nav { display: flex; flex-wrap: wrap; gap: 8px; }
+nav a { font: 600 0.88rem var(--body); color: var(--ink); text-decoration: none; border: 1px solid var(--line); background: var(--surface); border-radius: 999px; padding: 5px 12px; }
+nav a:hover, nav a:focus-visible { border-color: var(--accent); color: var(--accent); outline: none; }
+.flow { display: grid; gap: 14px; scroll-margin-top: 16px; }
+.flow-head { display: grid; gap: 4px; border-top: 2px solid var(--ink); padding-top: 14px; }
+.flow-head p { color: var(--muted); max-width: 72ch; }
+.flow-body { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
+@media (max-width: 860px) { .flow-body { grid-template-columns: minmax(0, 1fr); } }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; min-width: 0; }
+figure pre.mermaid { margin: 0; background: transparent; font-family: var(--body); text-align: center; }
+figcaption { margin-top: 10px; font-size: 0.88rem; color: var(--muted); }
+aside { display: grid; gap: 8px; font-size: 0.92rem; }
+aside h3 { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0; font-weight: 600; }
+aside ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+aside li::marker { color: var(--accent); }
+aside .ids { font-family: var(--mono); font-size: 0.75rem; color: var(--muted); }
+code { font-family: var(--mono); font-size: 0.85em; background: var(--accent-soft); padding: 0 4px; border-radius: 3px; }
+footer { color: var(--muted); font-size: 0.85rem; }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Nahj Seller Marketplace · Indonesia V1</span>
+    <h1>The five journeys as flowcharts</h1>
+    <p class="lede">Each chart follows one journey through the people and systems involved, with every decision point and its branches. Rules and story IDs sit beside each chart. Decisions are as recorded on 24 Oct 2026.</p>
+    <nav aria-label="Flows">
+      <a href="#purchase">1 · Purchase</a>
+      <a href="#redeem">2 · Redeem a code</a>
+      <a href="#refund">3 · Refund</a>
+      <a href="#money">4 · Commission and withdrawal</a>
+      <a href="#onboarding">5 · Seller onboarding</a>
+    </nav>
+  </header>
+
+  <section class="flow" id="purchase" aria-labelledby="h-purchase">
+    <div class="flow-head"><span class="eyebrow">Flow 1</span><h2 id="h-purchase">Purchase, from sale link to VIP or codes</h2>
+      <p>Lanes show who acts. Fulfillment happens inside payment acceptance, with no seller step and no 30-minute window.</p></div>
+    <div class="flow-body">
+      <figure>
+<pre class="mermaid">
+flowchart TD
+  subgraph SL["Seller"]
+    A["Create sale link<br/>plan, quantity, direct or codes"] --> B["Share link or QR"]
+  end
+  subgraph BY["Buyer"]
+    C["Open link"] --> D{"Signed in with a<br/>Nahj account?"}
+    D -- "no or guest" --> D1["Sign in or create account"] --> D
+    D -- "yes" --> E["Review quote in IDR"]
+    E --> F{"Lifetime holder<br/>choosing direct?"}
+    F -- "yes" --> F1["Offer codes instead"] --> E
+    F -- "no" --> G["Accept terms and confirm"]
+    G --> H["Choose QRIS or bank VA"]
+  end
+  subgraph MP["Marketplace"]
+    O["Order created<br/>price and commission frozen"]
+    R["Route picks provider<br/>Xendit or Midtrans"]
+    V{"Webhook valid?<br/>merchant, amount, currency"}
+    W{"First success<br/>for this order?"}
+    U["Create one unit per quantity<br/>record commission per unit"]
+    M{"Direct or codes?"}
+    X["Generate all codes<br/>publish to My Purchases<br/>send email"]
+    Y["Create-grant call<br/>rejectIfLifetime"]
+    RJ["Recovery job retries<br/>buyer sees Paid, activating"]
+    HD["Unit held<br/>Support offers code or refund"]
+    Z["Order completed"]
+    K["Mismatch case<br/>for Finance"]
+    DP["Duplicate case<br/>extra payment refunded"]
+  end
+  subgraph PV["Payment provider"]
+    P1["Show QR or VA number"] --> P2["Buyer pays in bank<br/>or wallet app"] --> P3["Send webhook"]
+  end
+  subgraph NB["nahj_backend"]
+    N1["Lock user<br/>start at end of current VIP<br/>store order period"] --> N2["Update app cache<br/>push refresh hint"]
+  end
+  B -- "buyer taps" --> C
+  G -- "creates" --> O
+  H --> R
+  R -- "create attempt" --> P1
+  P3 -- "notifies" --> V
+  V -- "mismatch" --> K
+  V -- "valid" --> W
+  W -- "no" --> DP
+  W -- "yes" --> U --> M
+  M -- "codes" --> X --> Z
+  M -- "direct" --> Y
+  Y -- "calls" --> N1
+  Y -- "unreachable" --> RJ --> Y
+  Y -- "refused, now Lifetime" --> HD
+  N2 -- "confirmed" --> Z
+</pre>
+        <figcaption>A sale link becomes an order only when the signed-in buyer confirms. A verified first payment creates the units and fulfills them at once: codes are published, or VIP time is added in nahj_backend.</figcaption>
+      </figure>
+      <aside>
+        <h3>Rules</h3>
+        <ul>
+          <li>Quantity above 1 always means codes; direct is quantity 1 only.</li>
+          <li>Previewing a link never claims it.</li>
+          <li>A late success on an expired attempt is still accepted at the original price.</li>
+          <li>Redirects and screenshots are never proof of payment.</li>
+          <li>New VIP days start at the end of the buyer's current VIP time.</li>
+        </ul>
+        <p class="ids">CUS-02 · CUS-03 · CUS-04 · CUS-05 · CUS-06 · SEL-04 · SYS-01 · SYS-05</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="flow" id="redeem" aria-labelledby="h-redeem">
+    <div class="flow-head"><span class="eyebrow">Flow 2</span><h2 id="h-redeem">Redeem a code, on the web or in Android</h2>
+      <p>Checking a code reserves nothing. Only Confirm consumes it, inside one locked transaction.</p></div>
+    <div class="flow-body">
+      <figure>
+<pre class="mermaid">
+flowchart TD
+  A["Recipient opens Redeem<br/>web or Android after parent gate"] --> B{"Signed in,<br/>not a guest?"}
+  B -- "no" --> B1["Sign in"] --> B
+  B -- "yes" --> C["Enter code, tap Check"]
+  C --> D{"Code status?"}
+  D -- "not found or voided" --> D1["Invalid code message"]
+  D -- "already used" --> D2{"Used by this<br/>account?"}
+  D2 -- "yes" --> D3["Show the original result"]
+  D2 -- "no" --> D4["Neutral already-used message<br/>no identity shown"]
+  D -- "live" --> E{"Account holds<br/>Lifetime?"}
+  E -- "yes" --> E1["You already have Lifetime<br/>code stays unused"]
+  E -- "no" --> F["Preview: plan, account,<br/>new expiry date"]
+  F --> G["Tap Confirm"]
+  G --> H["Lock code and unit<br/>recheck holds and refunds<br/>mark code consumed"]
+  H -- "create-grant" --> I["nahj_backend adds days<br/>at end of current VIP"]
+  I --> J["Unit activated<br/>48 h refund window starts<br/>commission can be released"]
+  J --> K["App refreshes access"]
+</pre>
+        <figcaption>Two people confirming the same code produce exactly one grant. A retry from the same account returns the stored result, so a timeout never doubles the VIP time.</figcaption>
+      </figure>
+      <aside>
+        <h3>Rules</h3>
+        <ul>
+          <li>A code's days start at redemption, not at payment.</li>
+          <li>A unit reserved for refund cannot be redeemed.</li>
+          <li>Redeem is rate-limited per account and per code, not only per IP.</li>
+          <li>A push notification is a refresh hint, never the grant.</li>
+        </ul>
+        <p class="ids">REC-01 · REC-02 · REC-03 · T09 · T23 · T24</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="flow" id="refund" aria-labelledby="h-refund">
+    <div class="flow-head"><span class="eyebrow">Flow 3</span><h2 id="h-refund">Refund, per unit</h2>
+      <p>A request changes nothing. Finance chooses the units, and each unit is checked against its own window.</p></div>
+    <div class="flow-body">
+      <figure>
+<pre class="mermaid">
+flowchart TD
+  A["Buyer requests refund"] --> B["Support case opened<br/>nothing reserved yet"]
+  B --> C["Finance reviews units"]
+  C --> D{"Unit state?"}
+  D -- "unused code" --> E{"Within 30 days<br/>of payment?"}
+  D -- "activated" --> F{"Within 48 h<br/>of activation?"}
+  E -- "no" --> X["Refused with reason<br/>exception needs approval"]
+  F -- "no" --> X
+  E -- "yes" --> G["Eligible"]
+  F -- "yes" --> G
+  G --> H["Approve selected units<br/>reserve units, void codes"]
+  H --> I{"Original provider<br/>can refund this?"}
+  I -- "yes: QRIS in window" --> J["Provider refund"]
+  I -- "no: bank VA or partial" --> K["Buyer gives bank or e-wallet<br/>refund by payout"]
+  J --> L{"Result?"}
+  K --> L
+  L -- "unknown" --> L1["Stay reserved<br/>query original command"] --> L
+  L -- "failed" --> L2["Retry, or roll back<br/>with audit record"]
+  L -- "succeeded" --> M["Reverse each unit's price<br/>and commission once<br/>requalify referral month"]
+  M --> N{"Unit was<br/>activated?"}
+  N -- "yes" --> O["nahj_backend removes unused days<br/>later orders move earlier"]
+  N -- "no" --> P["Refund complete"]
+  O --> P
+</pre>
+        <figcaption>Example: 10 codes, 4 redeemed long ago, 6 unused and inside 30 days. Only the 6 are refunded, at their original unit price, and their commission is reversed.</figcaption>
+      </figure>
+      <aside>
+        <h3>Rules</h3>
+        <ul>
+          <li>Windows are settings: 48 h after activation, 30 days for unused codes. Each order keeps the values from its purchase.</li>
+          <li>Chargebacks cannot be refused; they use the same unused-days rule.</li>
+          <li>A surplus-payment refund touches no grant and no seller balance.</li>
+          <li>The seller cannot approve or block a refund.</li>
+        </ul>
+        <p class="ids">CUS-08 · FIN-02 · FIN-04 · T12 · T13</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="flow" id="money" aria-labelledby="h-money">
+    <div class="flow-head"><span class="eyebrow">Flow 4</span><h2 id="h-money">Commission and withdrawal</h2>
+      <p>Money moves between the seller's ledger buckets: Pending, Held, Available, Locked. Withdrawn is the running total paid out.</p></div>
+    <div class="flow-body">
+      <figure>
+<pre class="mermaid">
+flowchart TD
+  A["Payment accepted"] -- "per unit" --> B["Commission into Pending"]
+  B --> C{"Unit type?"}
+  C -- "direct" --> D["Wait 168 h after<br/>provider settlement"]
+  C -- "code" --> E["Wait 168 h AND<br/>redeemed or 30 days passed"]
+  D --> F{"Hold on this unit<br/>or seller?"}
+  E --> F
+  F -- "yes" --> F1["Held until Finance<br/>or risk review releases"] --> F
+  F -- "no" --> G["Available<br/>any debt covered first"]
+  G --> H["Seller requests withdrawal<br/>min Rp500,000, fee quote"]
+  H --> I["TOTP step-up"]
+  I --> J["Available to Locked<br/>gross, fee, net frozen"]
+  J --> K{"Finance queue<br/>second approver above threshold"}
+  K -- "rejected" --> J1["Unlock once<br/>back to Available"]
+  K -- "approved" --> L["Submit payout once"]
+  L --> M{"Payout result?"}
+  M -- "verified transfer" --> N["Paid, counted in Withdrawn"]
+  M -- "definite failure" --> J1
+  M -- "unknown" --> M1["Stay Processing<br/>reconcile, never resend"] --> M
+  N -. "bank returns it later" .-> R["Returned<br/>money back to Available"]
+  B -. "refund or chargeback" .-> Q["Commission reversed<br/>Available may go negative"]
+</pre>
+        <figcaption>Commission on an unused code waits until the code is redeemed or its refund period ends. A refunded code therefore never has released commission, which prevents seller debt from bulk refunds.</figcaption>
+      </figure>
+      <aside>
+        <h3>Rules</h3>
+        <ul>
+          <li>Commission = unit price × the seller's rate; a seller override wins over the default.</li>
+          <li>Pending never covers debt early.</li>
+          <li>A destination change notifies the old email and pauses withdrawals for a while.</li>
+          <li>A higher provider fee never silently lowers the confirmed net.</li>
+        </ul>
+        <p class="ids">SEL-07 · SEL-08 · FIN-03 · SYS-03 · T15 · T16 · T17</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="flow" id="onboarding" aria-labelledby="h-onboarding">
+    <div class="flow-head"><span class="eyebrow">Flow 5</span><h2 id="h-onboarding">Seller onboarding and status</h2>
+      <p>Approval starts onboarding. Selling starts only when the checklist is complete.</p></div>
+    <div class="flow-body">
+      <figure>
+<pre class="mermaid">
+flowchart TD
+  A["Sign in with Nahj account"] --> B["Draft application<br/>public name, city"]
+  B --> C["Submit"]
+  C --> D{"Seller management<br/>review"}
+  D -- "more information" --> E["Seller updates<br/>evidence only if asked"] --> C
+  D -- "rejected" --> F["Rejected with reason"]
+  D -- "approved" --> G["Onboarding checklist"]
+  G --> H{"TOTP set, terms accepted,<br/>display name approved?"}
+  H -- "not yet" --> G
+  H -- "yes" --> I["Active seller<br/>creates sale links"]
+  I --> J{"Status change?"}
+  J -- "seller pauses" --> K["Hidden from directory<br/>links still work"]
+  J -- "staff suspends" --> L["No new links, orders or attempts<br/>paid orders and history kept"]
+  J -- "risk hold" --> M["Scoped hold: sales, directory,<br/>commission or withdrawal"]
+  K -- "resume" --> I
+  L -- "restore" --> I
+</pre>
+        <figcaption>Pause, suspension and withdrawal holds are independent. None of them confiscates money or blocks recovery of an order that is already paid.</figcaption>
+      </figure>
+      <aside>
+        <h3>Rules</h3>
+        <ul>
+          <li>Display names are unique and cannot look official.</li>
+          <li>Profile edits are reviewed; the approved version stays live meanwhile.</li>
+          <li>Withdrawal holds need a Finance capability.</li>
+        </ul>
+        <p class="ids">SEL-01 · SEL-02 · SEL-03 · SEL-11 · SM-01 · SM-02 · SM-03 · T20</p>
+      </aside>
+    </div>
+  </section>
+
+  <footer>Companion to the Nahj Marketplace User Stories page. Story IDs match that page and the project documents in the agent_marketing repository.</footer>
+</div>
