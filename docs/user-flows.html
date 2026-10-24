@@ -45,7 +45,13 @@ nav a:hover, nav a:focus-visible { border-color: var(--accent); color: var(--acc
 .flow-body { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
 @media (max-width: 860px) { .flow-body { grid-template-columns: minmax(0, 1fr); } }
 figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; overflow-x: auto; min-width: 0; }
-figure pre.mermaid { margin: 0; background: transparent; font-family: var(--body); text-align: center; }
+.diagram { min-height: 120px; display: grid; place-items: center; }
+.diagram svg { max-width: 100%; height: auto; }
+.diagram .loading, .diagram .failed { color: var(--muted); font-size: 0.9rem; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 0.86rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 14px; border-radius: 4px; border: 2px solid var(--sw-stroke); background: var(--sw-fill); display: inline-block; }
+.legend i.diamond { transform: rotate(45deg) scale(0.8); border-radius: 2px; }
 figcaption { margin-top: 10px; font-size: 0.88rem; color: var(--muted); }
 aside { display: grid; gap: 8px; font-size: 0.92rem; }
 aside h3 { font-family: var(--mono); font-size: 0.72rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 0; font-weight: 600; }
@@ -68,6 +74,7 @@ footer { color: var(--muted); font-size: 0.85rem; }
       <a href="#money">4 · Commission and withdrawal</a>
       <a href="#onboarding">5 · Seller onboarding</a>
     </nav>
+    <div class="legend" id="legend" aria-label="Colour key"></div>
   </header>
 
   <section class="flow" id="purchase" aria-labelledby="h-purchase">
@@ -75,18 +82,19 @@ footer { color: var(--muted); font-size: 0.85rem; }
       <p>Lanes show who acts. Fulfillment happens inside payment acceptance, with no seller step and no 30-minute window.</p></div>
     <div class="flow-body">
       <figure>
-<pre class="mermaid">
+<div class="diagram" id="d0" role="img" aria-label="Flowchart 1"><p class="loading">Drawing diagram…</p></div>
+<script type="text/plain" class="flow-src" id="src0">
 flowchart TD
   subgraph SL["Seller"]
     A["Create sale link<br/>plan, quantity, direct or codes"] --> B["Share link or QR"]
   end
   subgraph BY["Buyer"]
     C["Open link"] --> D{"Signed in with a<br/>Nahj account?"}
-    D -- "no or guest" --> D1["Sign in or create account"] --> D
-    D -- "yes" --> E["Review quote in IDR"]
+    D -->|no or guest| D1["Sign in or create account"] --> D
+    D -->|yes| E["Review quote in IDR"]
     E --> F{"Lifetime holder<br/>choosing direct?"}
-    F -- "yes" --> F1["Offer codes instead"] --> E
-    F -- "no" --> G["Accept terms and confirm"]
+    F -->|yes| F1["Offer codes instead"] --> E
+    F -->|no| G["Accept terms and confirm"]
     G --> H["Choose QRIS or bank VA"]
   end
   subgraph MP["Marketplace"]
@@ -110,22 +118,29 @@ flowchart TD
   subgraph NB["nahj_backend"]
     N1["Lock user<br/>start at end of current VIP<br/>store order period"] --> N2["Update app cache<br/>push refresh hint"]
   end
-  B -- "buyer taps" --> C
-  G -- "creates" --> O
+  B -->|buyer taps| C
+  G -->|creates| O
   H --> R
-  R -- "create attempt" --> P1
-  P3 -- "notifies" --> V
-  V -- "mismatch" --> K
-  V -- "valid" --> W
-  W -- "no" --> DP
-  W -- "yes" --> U --> M
-  M -- "codes" --> X --> Z
-  M -- "direct" --> Y
-  Y -- "calls" --> N1
-  Y -- "unreachable" --> RJ --> Y
-  Y -- "refused, now Lifetime" --> HD
-  N2 -- "confirmed" --> Z
-</pre>
+  R -->|create attempt| P1
+  P3 -->|notifies| V
+  V -->|mismatch| K
+  V -->|valid| W
+  W -->|no| DP
+  W -->|yes| U --> M
+  M -->|codes| X --> Z
+  M -->|direct| Y
+  Y -->|calls| N1
+  Y -->|unreachable| RJ --> Y
+  Y -->|refused, now Lifetime| HD
+  N2 -->|confirmed| Z
+  class A,B seller
+  class C,D,D1,E,F,F1,G,H buyer
+  class O,R,V,W,U,M,X,Y,RJ mp
+  class HD,K,DP bad
+  class P1,P2,P3 prov
+  class N1,N2 nb
+  class Z ok
+</script>
         <figcaption>A sale link becomes an order only when the signed-in buyer confirms. A verified first payment creates the units and fulfills them at once: codes are published, or VIP time is added in nahj_backend.</figcaption>
       </figure>
       <aside>
@@ -147,25 +162,32 @@ flowchart TD
       <p>Checking a code reserves nothing. Only Confirm consumes it, inside one locked transaction.</p></div>
     <div class="flow-body">
       <figure>
-<pre class="mermaid">
+<div class="diagram" id="d1" role="img" aria-label="Flowchart 2"><p class="loading">Drawing diagram…</p></div>
+<script type="text/plain" class="flow-src" id="src1">
 flowchart TD
   A["Recipient opens Redeem<br/>web or Android after parent gate"] --> B{"Signed in,<br/>not a guest?"}
-  B -- "no" --> B1["Sign in"] --> B
-  B -- "yes" --> C["Enter code, tap Check"]
+  B -->|no| B1["Sign in"] --> B
+  B -->|yes| C["Enter code, tap Check"]
   C --> D{"Code status?"}
-  D -- "not found or voided" --> D1["Invalid code message"]
-  D -- "already used" --> D2{"Used by this<br/>account?"}
-  D2 -- "yes" --> D3["Show the original result"]
-  D2 -- "no" --> D4["Neutral already-used message<br/>no identity shown"]
-  D -- "live" --> E{"Account holds<br/>Lifetime?"}
-  E -- "yes" --> E1["You already have Lifetime<br/>code stays unused"]
-  E -- "no" --> F["Preview: plan, account,<br/>new expiry date"]
+  D -->|not found or voided| D1["Invalid code message"]
+  D -->|already used| D2{"Used by this<br/>account?"}
+  D2 -->|yes| D3["Show the original result"]
+  D2 -->|no| D4["Neutral already-used message<br/>no identity shown"]
+  D -->|live| E{"Account holds<br/>Lifetime?"}
+  E -->|yes| E1["You already have Lifetime<br/>code stays unused"]
+  E -->|no| F["Preview: plan, account,<br/>new expiry date"]
   F --> G["Tap Confirm"]
   G --> H["Lock code and unit<br/>recheck holds and refunds<br/>mark code consumed"]
-  H -- "create-grant" --> I["nahj_backend adds days<br/>at end of current VIP"]
+  H -->|create-grant| I["nahj_backend adds days<br/>at end of current VIP"]
   I --> J["Unit activated<br/>48 h refund window starts<br/>commission can be released"]
   J --> K["App refreshes access"]
-</pre>
+  class A,B1,C,F,G,D3 buyer
+  class B,D,D2,E dec
+  class D1,D4,E1 bad
+  class H mp
+  class I nb
+  class J,K ok
+</script>
         <figcaption>Two people confirming the same code produce exactly one grant. A retry from the same account returns the stored result, so a timeout never doubles the VIP time.</figcaption>
       </figure>
       <aside>
@@ -186,31 +208,39 @@ flowchart TD
       <p>A request changes nothing. Finance chooses the units, and each unit is checked against its own window.</p></div>
     <div class="flow-body">
       <figure>
-<pre class="mermaid">
+<div class="diagram" id="d2" role="img" aria-label="Flowchart 3"><p class="loading">Drawing diagram…</p></div>
+<script type="text/plain" class="flow-src" id="src2">
 flowchart TD
   A["Buyer requests refund"] --> B["Support case opened<br/>nothing reserved yet"]
   B --> C["Finance reviews units"]
   C --> D{"Unit state?"}
-  D -- "unused code" --> E{"Within 30 days<br/>of payment?"}
-  D -- "activated" --> F{"Within 48 h<br/>of activation?"}
-  E -- "no" --> X["Refused with reason<br/>exception needs approval"]
-  F -- "no" --> X
-  E -- "yes" --> G["Eligible"]
-  F -- "yes" --> G
+  D -->|unused code| E{"Within 30 days<br/>of payment?"}
+  D -->|activated| F{"Within 48 h<br/>of activation?"}
+  E -->|no| X["Refused with reason<br/>exception needs approval"]
+  F -->|no| X
+  E -->|yes| G["Eligible"]
+  F -->|yes| G
   G --> H["Approve selected units<br/>reserve units, void codes"]
   H --> I{"Original provider<br/>can refund this?"}
-  I -- "yes: QRIS in window" --> J["Provider refund"]
-  I -- "no: bank VA or partial" --> K["Buyer gives bank or e-wallet<br/>refund by payout"]
+  I -->|yes: QRIS in window| J["Provider refund"]
+  I -->|no: bank VA or partial| K["Buyer gives bank or e-wallet<br/>refund by payout"]
   J --> L{"Result?"}
   K --> L
-  L -- "unknown" --> L1["Stay reserved<br/>query original command"] --> L
-  L -- "failed" --> L2["Retry, or roll back<br/>with audit record"]
-  L -- "succeeded" --> M["Reverse each unit's price<br/>and commission once<br/>requalify referral month"]
+  L -->|unknown| L1["Stay reserved<br/>query original command"] --> L
+  L -->|failed| L2["Retry, or roll back<br/>with audit record"]
+  L -->|succeeded| M["Reverse each unit's price<br/>and commission once<br/>requalify referral month"]
   M --> N{"Unit was<br/>activated?"}
-  N -- "yes" --> O["nahj_backend removes unused days<br/>later orders move earlier"]
-  N -- "no" --> P["Refund complete"]
+  N -->|yes| O["nahj_backend removes unused days<br/>later orders move earlier"]
+  N -->|no| P["Refund complete"]
   O --> P
-</pre>
+  class A buyer
+  class B,C,G,H,M,L1 staff
+  class D,E,F,I,L,N dec
+  class X,L2 bad
+  class J,K prov
+  class O nb
+  class P ok
+</script>
         <figcaption>Example: 10 codes, 4 redeemed long ago, 6 unused and inside 30 days. Only the 6 are refunded, at their original unit price, and their commission is reversed.</figcaption>
       </figure>
       <aside>
@@ -231,29 +261,36 @@ flowchart TD
       <p>Money moves between the seller's ledger buckets: Pending, Held, Available, Locked. Withdrawn is the running total paid out.</p></div>
     <div class="flow-body">
       <figure>
-<pre class="mermaid">
+<div class="diagram" id="d3" role="img" aria-label="Flowchart 4"><p class="loading">Drawing diagram…</p></div>
+<script type="text/plain" class="flow-src" id="src3">
 flowchart TD
-  A["Payment accepted"] -- "per unit" --> B["Commission into Pending"]
+  A["Payment accepted"] -->|per unit| B["Commission into Pending"]
   B --> C{"Unit type?"}
-  C -- "direct" --> D["Wait 168 h after<br/>provider settlement"]
-  C -- "code" --> E["Wait 168 h AND<br/>redeemed or 30 days passed"]
+  C -->|direct| D["Wait 168 h after<br/>provider settlement"]
+  C -->|code| E["Wait 168 h AND<br/>redeemed or 30 days passed"]
   D --> F{"Hold on this unit<br/>or seller?"}
   E --> F
-  F -- "yes" --> F1["Held until Finance<br/>or risk review releases"] --> F
-  F -- "no" --> G["Available<br/>any debt covered first"]
+  F -->|yes| F1["Held until Finance<br/>or risk review releases"] --> F
+  F -->|no| G["Available<br/>any debt covered first"]
   G --> H["Seller requests withdrawal<br/>min Rp500,000, fee quote"]
   H --> I["TOTP step-up"]
   I --> J["Available to Locked<br/>gross, fee, net frozen"]
   J --> K{"Finance queue<br/>second approver above threshold"}
-  K -- "rejected" --> J1["Unlock once<br/>back to Available"]
-  K -- "approved" --> L["Submit payout once"]
+  K -->|rejected| J1["Unlock once<br/>back to Available"]
+  K -->|approved| L["Submit payout once"]
   L --> M{"Payout result?"}
-  M -- "verified transfer" --> N["Paid, counted in Withdrawn"]
-  M -- "definite failure" --> J1
-  M -- "unknown" --> M1["Stay Processing<br/>reconcile, never resend"] --> M
-  N -. "bank returns it later" .-> R["Returned<br/>money back to Available"]
-  B -. "refund or chargeback" .-> Q["Commission reversed<br/>Available may go negative"]
-</pre>
+  M -->|verified transfer| N["Paid, counted in Withdrawn"]
+  M -->|definite failure| J1
+  M -->|unknown| M1["Stay Processing<br/>reconcile, never resend"] --> M
+  N -.->|bank returns it later| R["Returned<br/>money back to Available"]
+  B -.->|refund or chargeback| Q["Commission reversed<br/>Available may go negative"]
+  class A,B,D,E,F1,G,J,J1,M1,R mp
+  class C,F,K,M dec
+  class H,I seller
+  class L prov
+  class N ok
+  class Q bad
+</script>
         <figcaption>Commission on an unused code waits until the code is redeemed or its refund period ends. A refunded code therefore never has released commission, which prevents seller debt from bulk refunds.</figcaption>
       </figure>
       <aside>
@@ -274,24 +311,30 @@ flowchart TD
       <p>Approval starts onboarding. Selling starts only when the checklist is complete.</p></div>
     <div class="flow-body">
       <figure>
-<pre class="mermaid">
+<div class="diagram" id="d4" role="img" aria-label="Flowchart 5"><p class="loading">Drawing diagram…</p></div>
+<script type="text/plain" class="flow-src" id="src4">
 flowchart TD
   A["Sign in with Nahj account"] --> B["Draft application<br/>public name, city"]
   B --> C["Submit"]
   C --> D{"Seller management<br/>review"}
-  D -- "more information" --> E["Seller updates<br/>evidence only if asked"] --> C
-  D -- "rejected" --> F["Rejected with reason"]
-  D -- "approved" --> G["Onboarding checklist"]
+  D -->|more information| E["Seller updates<br/>evidence only if asked"] --> C
+  D -->|rejected| F["Rejected with reason"]
+  D -->|approved| G["Onboarding checklist"]
   G --> H{"TOTP set, terms accepted,<br/>display name approved?"}
-  H -- "not yet" --> G
-  H -- "yes" --> I["Active seller<br/>creates sale links"]
+  H -->|not yet| G
+  H -->|yes| I["Active seller<br/>creates sale links"]
   I --> J{"Status change?"}
-  J -- "seller pauses" --> K["Hidden from directory<br/>links still work"]
-  J -- "staff suspends" --> L["No new links, orders or attempts<br/>paid orders and history kept"]
-  J -- "risk hold" --> M["Scoped hold: sales, directory,<br/>commission or withdrawal"]
-  K -- "resume" --> I
-  L -- "restore" --> I
-</pre>
+  J -->|seller pauses| K["Hidden from directory<br/>links still work"]
+  J -->|staff suspends| L["No new links, orders or attempts<br/>paid orders and history kept"]
+  J -->|risk hold| M["Scoped hold: sales, directory,<br/>commission or withdrawal"]
+  K -->|resume| I
+  L -->|restore| I
+  class A,B,C,E seller
+  class D,H,J dec
+  class F,L,M bad
+  class G,K staff
+  class I ok
+</script>
         <figcaption>Pause, suspension and withdrawal holds are independent. None of them confiscates money or blocks recovery of an order that is already paid.</figcaption>
       </figure>
       <aside>
@@ -308,3 +351,85 @@ flowchart TD
 
   <footer>Companion to the Nahj Marketplace User Stories page. Story IDs match that page and the project documents in the agent_marketing repository.</footer>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<script>
+(function () {
+  function isDark() {
+    var t = document.documentElement.getAttribute("data-theme");
+    if (t === "dark") return true;
+    if (t === "light") return false;
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  var KEY = [
+    ["buyer", "Buyer or recipient"], ["seller", "Seller"], ["mp", "Marketplace system"],
+    ["prov", "Payment or payout provider"], ["nb", "nahj_backend"], ["staff", "Nahj staff"],
+    ["dec", "Decision"], ["ok", "Good outcome"], ["bad", "Refused, error or exception"]
+  ];
+  function palette(dark) {
+    return dark ? {
+      ink: "#e6ece8", muted: "#9aa8a0", bg: "#18201c", line: "#5d6b64", cluster: "#1c2621",
+      buyer: ["#1d2a3d", "#7fa3e6"], seller: ["#33291a", "#e3a64a"], mp: ["#1d3029", "#5cc3a5"],
+      prov: ["#2b2238", "#b493de"], nb: ["#262b29", "#a9b5ae"], staff: ["#2e2a1c", "#cdb46a"],
+      dec: ["#1a2420", "#e6ece8"], ok: ["#173a2d", "#6fd6b2"], bad: ["#3a231e", "#e58a75"]
+    } : {
+      ink: "#17201c", muted: "#5a665f", bg: "#ffffff", line: "#7d8a83", cluster: "#f7f8f5",
+      buyer: ["#e4ecfb", "#3b63b8"], seller: ["#f8ecd8", "#b9781a"], mp: ["#e2efe9", "#1d6b58"],
+      prov: ["#efe6f7", "#7a4fa6"], nb: ["#eceeec", "#5a665f"], staff: ["#f4efdc", "#8f7520"],
+      dec: ["#ffffff", "#17201c"], ok: ["#d8f0e6", "#1d6b58"], bad: ["#f6e3de", "#a8432f"]
+    };
+  }
+  function classDefs(c) {
+    return KEY.map(function (k) {
+      var v = c[k[0]];
+      return "  classDef " + k[0] + " fill:" + v[0] + ",stroke:" + v[1] + ",stroke-width:" + (k[0] === "dec" ? 2 : 1.5) + "px,color:" + c.ink;
+    }).join("\n") + "\n";
+  }
+  function legend(c) {
+    var el = document.getElementById("legend");
+    el.innerHTML = KEY.map(function (k) {
+      var v = c[k[0]];
+      return '<span><i class="' + (k[0] === "dec" ? "diamond" : "") + '" style="--sw-fill:' + v[0] + ';--sw-stroke:' + v[1] + '"></i>' + k[1] + "</span>";
+    }).join("");
+  }
+  var busy = false;
+  async function draw() {
+    if (busy) return; busy = true;
+    var c = palette(isDark());
+    legend(c);
+    if (!window.mermaid) {
+      document.querySelectorAll(".diagram").forEach(function (d) { d.innerHTML = '<p class="failed">The diagram library could not load. Reload the page to try again.</p>'; });
+      busy = false; return;
+    }
+    mermaid.initialize({
+      startOnLoad: false, securityLevel: "strict", theme: "base",
+      fontFamily: '"Source Sans 3", "Segoe UI", system-ui, sans-serif',
+      themeVariables: {
+        fontSize: "14px", primaryTextColor: c.ink, textColor: c.ink, lineColor: c.line,
+        background: c.bg, mainBkg: c.mp[0], primaryColor: c.mp[0], primaryBorderColor: c.mp[1],
+        clusterBkg: c.cluster, clusterBorder: c.line, edgeLabelBackground: c.bg, titleColor: c.muted
+      },
+      flowchart: { curve: "basis", htmlLabels: true, nodeSpacing: 34, rankSpacing: 46, padding: 10, useMaxWidth: true }
+    });
+    var srcs = document.querySelectorAll(".flow-src");
+    for (var i = 0; i < srcs.length; i++) {
+      var target = document.getElementById("d" + i);
+      var lines = srcs[i].textContent.replace(/^\s+/, "").split("\n");
+      var def = lines[0] + "\n" + classDefs(c) + lines.slice(1).join("\n");
+      try {
+        var res = await mermaid.render("m" + i + "-" + Date.now(), def);
+        target.innerHTML = res.svg;
+      } catch (e) {
+        target.innerHTML = '<p class="failed">This diagram could not be drawn.</p>';
+      }
+    }
+    busy = false;
+  }
+  draw();
+  if (window.matchMedia) {
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    if (mq.addEventListener) mq.addEventListener("change", draw);
+  }
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+})();
+</script>
