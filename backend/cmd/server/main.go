@@ -59,11 +59,13 @@ func runMigrate(ctx context.Context, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	ran, err := db.Migrate(ctx, cfg.DBDSN, migrations.Files)
+	res, err := db.Migrate(ctx, cfg.DBDSN, migrations.Files)
 	if err != nil {
 		return err
 	}
-	log.Info("migrations applied", "count", len(ran), "versions", ran)
+	log.Info("migrate finished",
+		"applied_count", len(res.Applied), "applied", res.Applied,
+		"already_applied_count", len(res.AlreadyApplied), "already_applied", res.AlreadyApplied)
 	return nil
 }
 

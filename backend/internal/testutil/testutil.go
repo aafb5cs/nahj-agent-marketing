@@ -37,6 +37,16 @@ type DB struct {
 // NewDB creates, migrates and (on cleanup) drops a schema for one test.
 func NewDB(t *testing.T) *DB {
 	t.Helper()
+	d := NewEmptyDB(t)
+	if _, err := db.Migrate(context.Background(), d.DSN, migrations.Files); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	return d
+}
+
+// NewEmptyDB creates and (on cleanup) drops an empty schema, without migrating.
+func NewEmptyDB(t *testing.T) *DB {
+	t.Helper()
 	base := os.Getenv("MK_TEST_MYSQL_DSN")
 	if base == "" {
 		t.Skip("MK_TEST_MYSQL_DSN not set; skipping database test")
@@ -63,9 +73,6 @@ func NewDB(t *testing.T) *DB {
 
 	cfg.DBName = schema
 	dsn := cfg.FormatDSN()
-	if _, err := db.Migrate(ctx, dsn, migrations.Files); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
 	conn, err := db.Open(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open: %v", err)

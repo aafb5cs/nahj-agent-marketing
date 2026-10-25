@@ -26,6 +26,14 @@ MK_TEST_MYSQL_DSN='root:root@tcp(127.0.0.1:3306)/' go test ./...
 
 Without `MK_TEST_MYSQL_DSN` the database tests are skipped.
 
+With the race detector (runs in a Linux Go container, so no local 64-bit C compiler is needed):
+
+```bash
+./scripts/test-race.sh
+```
+
+`migrate` takes a MySQL advisory lock per schema, so two deploys starting together never apply the same migration twice. Each run logs which versions were already applied and which it applied.
+
 ## Layout
 
 ```
