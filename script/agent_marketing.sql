@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS `operations` (
   `idempotency_key` VARCHAR(64) NOT NULL COMMENT 'Idempotency-Key header',
   `actor` VARCHAR(80) NOT NULL,
   `command` VARCHAR(64) NOT NULL,
-  `request_hash` BINARY(32) NOT NULL COMMENT 'same key, different body â†’ rejected',
+  `request_hash` BINARY(32) NOT NULL COMMENT 'same key, different body -> rejected',
   `status` VARCHAR(12) NOT NULL COMMENT 'running, done, failed',
   `http_status` INT NULL,
   `response` JSON NULL,
@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS `plans` (
   COMMENT='What is sold, versioned. Each row points to a nahj VIP item. A published row is never edited.';
 
 -- settings: Every other setting as a versioned JSON value: market rules, referral rule, payment and payout routes, providers.
--- Keys: withdrawal_min Â· store_hold_hours (google 72, apple 336) Â· earning_currencies ["IDR"] Â· referral_rule {target, reward_bps} Â· payment_routes [{method, provider, priority, limits, fee}] Â· payout_routes Â· providers {code, enabled, env, credentials_ref} Â· validity times Â· reserved_names Â· retention
+-- Keys: withdrawal_min ; store_hold_hours (google 72, apple 336) ; earning_currencies ["IDR"] ; referral_rule {target, reward_bps} ; payment_routes [{method, provider, priority, limits, fee}] ; payout_routes ; providers {code, enabled, env, credentials_ref} ; validity times ; reserved_names ; retention
 CREATE TABLE IF NOT EXISTS `settings` (
   `setting_key` VARCHAR(64) NOT NULL,
   `version` INT NOT NULL,
@@ -365,7 +365,7 @@ CREATE TABLE IF NOT EXISTS `payment_attempts` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `order_id` BIGINT UNSIGNED NOT NULL,
   `provider` VARCHAR(16) NOT NULL COMMENT 'xendit, midtrans, fake',
-  `method` VARCHAR(24) NOT NULL COMMENT 'qris, va_bcaâ€¦',
+  `method` VARCHAR(24) NOT NULL COMMENT 'qris, va_bca...',
   `route_version` INT NOT NULL COMMENT 'settings version used',
   `merchant_id` VARCHAR(64) NOT NULL,
   `expected_amount` BIGINT NOT NULL,
@@ -463,7 +463,7 @@ CREATE TABLE IF NOT EXISTS `codes` (
 -- journals: One balanced business event. Never edited; corrections are new journals.
 CREATE TABLE IF NOT EXISTS `journals` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `journal_type` VARCHAR(40) NOT NULL COMMENT 'payment_accepted, commission_accrued, withdrawal_paidâ€¦',
+  `journal_type` VARCHAR(40) NOT NULL COMMENT 'payment_accepted, commission_accrued, withdrawal_paid...',
   `source_type` VARCHAR(24) NOT NULL COMMENT 'unit, order, withdrawal, refund, referral_award, approval',
   `source_id` BIGINT UNSIGNED NOT NULL,
   `seller_id` BIGINT UNSIGNED NULL,
@@ -479,7 +479,7 @@ CREATE TABLE IF NOT EXISTS `journals` (
 CREATE TABLE IF NOT EXISTS `postings` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `journal_id` BIGINT UNSIGNED NOT NULL,
-  `account` VARCHAR(48) NOT NULL COMMENT 'seller:12:available Â· platform:provider_clearing:xendit Â· platform:commission_expense',
+  `account` VARCHAR(48) NOT NULL COMMENT 'seller:12:available ; platform:provider_clearing:xendit ; platform:commission_expense',
   `seller_id` BIGINT UNSIGNED NULL COMMENT 'for fast wallet queries',
   `debit` BIGINT NOT NULL DEFAULT 0,
   `credit` BIGINT NOT NULL DEFAULT 0,
@@ -498,7 +498,7 @@ CREATE TABLE IF NOT EXISTS `payout_destinations` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `seller_id` BIGINT UNSIGNED NOT NULL,
   `type` VARCHAR(12) NOT NULL COMMENT 'bank, ewallet',
-  `institution_code` VARCHAR(16) NOT NULL COMMENT 'BCA, DANAâ€¦',
+  `institution_code` VARCHAR(16) NOT NULL COMMENT 'BCA, DANA...',
   `account_number_enc` VARBINARY(256) NOT NULL,
   `account_last4` CHAR(4) NOT NULL,
   `holder_name` VARCHAR(128) NOT NULL,
@@ -690,7 +690,7 @@ CREATE TABLE IF NOT EXISTS `audit_events` (
 -- jobs: Outbox and scheduler in one table. An outbox call is a job due now; a deadline is a job due later. Claimed with SKIP LOCKED.
 CREATE TABLE IF NOT EXISTS `jobs` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  `kind` VARCHAR(32) NOT NULL COMMENT 'payment.create, grant.create, email.send, maturity.runâ€¦',
+  `kind` VARCHAR(32) NOT NULL COMMENT 'payment.create, grant.create, email.send, maturity.run...',
   `job_key` VARCHAR(160) NOT NULL COMMENT 'dedup key',
   `payload` JSON NULL,
   `run_at` DATETIME(3) NOT NULL,
