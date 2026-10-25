@@ -75,13 +75,12 @@ Add the i18n keys to all three locale files (`en`, `ar`, `id`). Rate-limit `PUT`
   - Payload:
     ```json
     {"store":"google|apple","storeTransactionId":"…","originalTransactionId":"…",
-     "userId":"…","itemId":"vip_pass_monthly","priceAmount":75000,"currency":"IDR",
+     "userId":"…","itemId":"vip_pass_monthly","reportedPrice":75000,"reportedCurrency":"IDR",
      "purchasedAt":"2026-10-25T08:00:00Z","agentCode":"AGT-7K2M3P","nahjOrderId":"…"}
     ```
-  - The price and currency must come from the **verified store data**, not from the client request:
-    - Google: the order's price from the Play Developer API purchase or order details, if available. Otherwise the item's configured price in the user's currency. State in the plan which one the code uses, and its limits.
-    - Apple: `price` and `currency` from the signed transaction (JWS v2).
-    - Convert to whole currency units.
+  - **Commission does not depend on the price you send.** The marketplace calculates it from its own catalog (an IDR base price per item). `reportedPrice` and `reportedCurrency` are optional, used for the currency rule and for reports:
+    - Apple: take `price` and `currency` from the signed transaction (JWS v2), converted to whole currency units.
+    - Google: send them only if the verified purchase data contains them. Otherwise omit both fields. Never take them from the client request.
 - **Restore** (Apple): no new outbox row if the original transaction was already reported.
 - **Refund** (Google voided purchase, Apple refund notification, through `RefundVipTime` from task 01): if the order has an `agent_code`, insert a `store_refund` outbox row in the same transaction: `{store, storeTransactionId, refundedAt, reason}`.
 - **Admin and marketplace grants** never create outbox rows.

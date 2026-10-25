@@ -156,7 +156,7 @@ footer { color: var(--muted); font-size: 0.85rem; }
       <li><span class="n">6</span><span class="who">System</span><strong>Releases commission</strong><p>Per unit, after 168 h and redemption or the 30-day end.</p></li>
       <li><span class="n">7</span><span class="who">Seller</span><strong>Withdraws</strong><p>Min Rp500,000, TOTP step-up, Finance queue, payout to bank.</p></li>
       <li><span class="n">8</span><span class="who">Buyer · Finance</span><strong>Refunds unused codes</strong><p>Within 30 days. Commission on those units is reversed.</p></li>
-      <li><span class="n">B</span><span class="who">Agent · User</span><strong>Or: app purchase with agent code</strong><p>User enters AGT-7K2M3P in the app and buys in the store. The agent earns on net after the hold.</p></li>
+      <li><span class="n">B</span><span class="who">Agent · User</span><strong>Or: app purchase with agent code</strong><p>User enters AGT-7K2M3P in the app and buys in the store. The agent earns on the catalog price after the hold.</p></li>
     </ol>
   </section>
 
@@ -330,8 +330,8 @@ const STORIES = [
     ["TOTP always required for staff","Disabling staff ends their sessions at once","The last active Super Admin cannot be disabled"],"spec","A19 · staff_invitations"),
   S("ADM-04","admin","Grant VIP as an exception","a Super Admin","to give VIP time without a payment, with a reason","special cases are handled",
     ["Needs a second approver","Creates an admin order in nahj_backend; no fake payment or commission"],"confirmed","A07 · approval_requests"),
-  S("ADM-05","admin","Set store-channel rules","a Super Admin","to set store fees, VAT, holds and earning currencies","app-store commission is calculated correctly",
-    ["Store fee per store and VAT rate as market settings, reconciled against store reports","Default holds Google 3 days, Apple 14 days; each agent wallet can override them","Earning currency list starts with IDR","Changes apply to new store sales only"],"confirmed","Decisions 18, 19 · market settings"),
+  S("ADM-05","admin","Set store-channel rules","a Super Admin","to set the store base prices, store rates, holds and earning currencies","app-store commission is calculated correctly",
+    ["An IDR base price and a store commission rate per VIP item in the catalog","Default holds Google 3 days, Apple 14 days; each agent wallet can override them","Earning currency list starts with IDR","Changes apply to new store sales only"],"confirmed","Decisions 18, 19 · market settings"),
 
   // System
   S("SYS-01","system","Fulfill at payment","the system","to fulfill every unit in the payment-acceptance step","buyers get VIP or codes instantly",
@@ -341,7 +341,7 @@ const STORIES = [
   S("SYS-03","system","Release matured commission","the system","to release each unit's commission when it is due","sellers are paid on time",
     ["Hourly; per unit; respects holds","Code units wait for redemption or the 30-day end"],"confirmed","§6.4 · 03-db §4.5"),
   S("SYS-06","system","Credit store sales to agents","the system","every in-app store purchase with an agent code recorded and credited","agents earn from app sales",
-    ["nahj_backend copies the account's saved agent code onto the order at completion and sends a store-sale event through its outbox","Recorded once per store transaction; an Apple restore never counts again","Commission = net (price without VAT, minus store fee) × agent rate; employees earn 0","Only configured currencies earn (IDR first); others are recorded only","Released after the agent's hold: default Google 3 days, Apple 14 days"],"confirmed","Decisions 18, 19 · store_sales · prompts/02"),
+    ["nahj_backend copies the account's saved agent code onto the order at completion and sends a store-sale event through its outbox","Recorded once per store transaction; an Apple restore never counts again","Commission = the catalog's IDR base price for the item × the agent's store rate; employees earn 0","Only configured currencies earn (IDR first); others are recorded only","Released after the agent's hold: default Google 3 days, Apple 14 days"],"confirmed","Decisions 18, 19 · store_sales · prompts/02"),
   S("SYS-07","system","Reverse commission on store refunds","the system","store refunds to reverse the agent's commission","agents are not paid for refunded sales",
     ["Google or Apple refund removes the order's unused VIP days in nahj_backend","A store-refund event reverses the commission once","After release, Available may go negative and future earnings cover it"],"confirmed","§6.9 · 03-db §6.2"),
   S("SYS-04","system","Close the referral month","the system","to qualify each referred seller at the start of a Jakarta month","rewards are correct",

@@ -370,7 +370,7 @@ flowchart TD
   H -->|yes| H1["Ignored, no double credit"]
   H -->|no| I{"Currency earns?<br/>IDR first"}
   I -->|no| I1["Recorded, no commission"]
-  I -->|yes| J["Net = price without VAT, minus store fee<br/>commission = net x agent rate<br/>employee rate is 0"]
+  I -->|yes| J["Commission = catalog IDR base price<br/>x agent store rate<br/>employee rate is 0"]
   J --> K["Commission into Pending"]
   K --> L{"Store refund before<br/>the hold ends?"}
   L -->|yes| M["nahj_backend removes unused days<br/>commission reversed"]
@@ -393,7 +393,7 @@ flowchart TD
           <li>One permanent code per agent: AGT- plus 6 characters, or an approved alias.</li>
           <li>No discount for the user (UX C04).</li>
           <li>An Apple restore never counts as a new sale.</li>
-          <li>Store fee, VAT, holds and earning currencies are settings; holds can be set per agent wallet.</li>
+          <li>Commission uses the catalog's IDR base price per item, not the store price. Holds and earning currencies are settings; holds can be set per agent wallet.</li>
           <li>Not in the original specification: added 25 Oct 2026.</li>
         </ul>
         <p class="ids">CUS-11 · SEL-12 · SM-04 · SYS-06 · SYS-07 · ADM-05</p>

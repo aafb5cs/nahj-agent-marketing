@@ -530,11 +530,9 @@ CREATE TABLE store_sales (
   agent_code               VARCHAR(16)  NOT NULL,      -- as copied onto the nahj order
   seller_id                BIGINT UNSIGNED NOT NULL,   -- frozen at recording time
   agent_type               VARCHAR(12)  NOT NULL,      -- frozen
-  price_amount             BIGINT       NOT NULL,      -- whole units of `currency`
-  currency                 CHAR(3)      NOT NULL,
-  vat_bps                  INT          NOT NULL,      -- frozen market setting
-  store_fee_bps            INT          NOT NULL,      -- frozen market setting
-  net_amount               BIGINT       NOT NULL,      -- 0 when the currency does not earn
+  reported_price           BIGINT       NULL,          -- from the store, if available (reports only)
+  reported_currency        CHAR(3)      NULL,
+  base_price               BIGINT       NOT NULL,      -- IDR, plan_versions.store_base_price (gross)
   commission_bps           INT          NOT NULL,      -- 0 for employees
   commission_amount        BIGINT       NOT NULL,
   earns                    TINYINT(1)   NOT NULL,      -- currency is in the earning list
@@ -549,7 +547,9 @@ CREATE TABLE store_sales (
 );
 ```
 
-Market settings added: `store_fee_bps_google`, `store_fee_bps_apple`, `store_vat_bps`, `store_hold_hours_google = 72`, `store_hold_hours_apple = 336`, `earning_currencies = ["IDR"]`.
+Market settings added: `store_hold_hours_google = 72`, `store_hold_hours_apple = 336`, `earning_currencies = ["IDR"]`. Catalog columns added on `plan_versions`: `store_base_price` (IDR) and `store_commission_bps`.
+
+When the store does not report a currency (possible on Google), the sale counts as earning; the currency rule applies only when a currency is known.
 
 ### 6.2 Ledger
 
@@ -592,7 +592,7 @@ The outbox row is written in the **same transaction** as the order completion or
 | Agent shares `AGT-7K2M3P` | `agent_codes` (active) |
 | User enters it | `users_attributes.agent_code = AGT-7K2M3P` |
 | User buys Monthly in Google Play for Rp75,000 | `nahj.orders` row with `agent_code`, VIP period; `marketplace_outbox` store_sale |
-| Event arrives | `store_sales`: price 75,000 IDR, VAT 11%, fee 15%, net 57,431, commission 10% = 5,743, release in 72 h; journal `store_commission_accrued` |
+| Event arrives | `store_sales`: base price Rp75,000 (from the catalog), store rate 10%, commission Rp7,500, release in 72 h; journal `store_commission_accrued` |
 | 72 hours later, no refund | `store_commission_matured` → Available |
 | (If refunded inside 48 h) | `nahj` removes unused days; store_refund event; `store_commission_reversed`; the sale is marked refunded |
 
