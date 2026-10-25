@@ -183,10 +183,10 @@ agent_marketing/
 | identity | `sessions`, `staff`, `staff_capabilities`, `staff_invitations`, `security_events`, `rate_limits`, `operations` (idempotency key → outcome) |
 | catalog | `config_versions`, `plans`, `plan_prices`, `commission_rates`, `seller_rate_overrides`, `referral_rules`, `market_settings` |
 | content | `policy_versions`, `policy_acceptances`, `help_articles` |
-| seller | `seller_applications`, `application_revisions`, `application_evidence`, `sellers`, `seller_onboarding`, `seller_profiles`, `seller_profile_revisions`, `reserved_names` |
+| seller | `agent_codes`, `seller_applications`, `application_revisions`, `application_evidence`, `sellers`, `seller_onboarding`, `seller_profiles`, `seller_profile_revisions`, `reserved_names` |
 | risk | `risk_cases`, `holds` |
 | approval | `approval_requests` |
-| sales | `customers`, `sale_requests`, `sale_request_events`, `sale_quotes`, `orders` |
+| sales | `customers`, `store_sales`, `sale_requests`, `sale_request_events`, `sale_quotes`, `orders` |
 | payment | `payment_providers`, `payment_routes`, `payment_attempts`, `provider_events`, `payment_cases` |
 | fulfillment | `purchased_units`, `activation_credentials`, `deliveries`, `share_events`, `redemptions` |
 | entitlement | `entitlement_grants` (local record of calls to `nahj_backend`) |
@@ -408,6 +408,76 @@ Example route set for launch:
 3. Add routes with low priority or disabled, and test in staging.
 4. Raise the priority or enable the routes in the admin catalog. No deployment of other modules is needed.
 
+### 6.9 App-store sales through agent codes (flow B)
+
+A second sales channel, added on 2026-10-25 and not in the original specification. The user buys VIP **inside the Nahj app** through Google Play or the App Store. An agent code the user entered earlier credits the agent. Google and Apple collect the money, so no payment gateway is involved.
+
+#### Flow
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant U as User (Nahj app)
+    participant G as nahj_backend
+    participant M as Marketplace
+    participant S as Google Play / App Store
+    A->>U: shares AGT-7K2M3P (code, link or QR)
+    U->>G: enter agent code
+    G->>M: validate code
+    M-->>G: valid, agent "Toko Ilmu"
+    G-->>U: Agent: Toko Ilmu ✓ (saved on the account)
+    U->>S: buys VIP pass (normal store price, no discount)
+    S-->>U: receipt
+    U->>G: complete order (existing flow)
+    G->>G: verify receipt, add VIP time, copy agent_code onto the order
+    G->>M: store sale event (outbox, retried)
+    M->>M: store_sales row, net amount, commission to agent Pending
+    Note over M: released after the agent's hold (default Google 3 days, Apple 14 days)
+    S-->>G: refund notification (later, if any)
+    G->>G: remove unused VIP days
+    G->>M: store refund event
+    M->>M: reverse commission
+```
+
+#### Rules (confirmed 2026-10-25)
+
+| Rule | Value |
+| --- | --- |
+| Agent code | One permanent code per agent: `AGT-` + 6 characters from an alphabet without 0/O and 1/I/L (about 729 million codes). An optional custom alias (for example `TOKOILMU`) must be unique and approved by staff. The dashboard shows the code, a share link (`nahj.ryam.app/a/AGT7K2M3P`) and a QR code. |
+| Linking | The user enters the code in the app, or opens the link. `nahj_backend` validates it with the marketplace and saves it on the user's account (`users_attributes`). The app pre-fills it for later purchases; the user can change or remove it. |
+| Attribution | At purchase completion, `nahj_backend` copies the saved code onto that order. Later code changes never move a past sale to another agent. |
+| Price | The user pays the normal store price. **No discount** (UX C04: "no coupon input or discounts invented"). |
+| Commission base | **Net**: the price without VAT, minus the store fee. `net = price × 10000 / (10000 + vat_bps) × (10000 − store_fee_bps) / 10000`, in whole rupiah, rounded down. VAT and store fee rates are market settings per store. Finance reconciles the estimate against the stores' monthly reports. |
+| Commission | `net × agent rate`. Employee agents have rate 0. |
+| Currencies that earn | Configurable list, starting with `IDR`. Sales in other currencies are recorded but earn nothing. |
+| Hold before release | Default per store: Google **3 days**, Apple **14 days**, as market settings. **Each agent's wallet can override them.** The values are copied onto the store sale when it is recorded. |
+| Refund after release | Commission is reversed. Available may go negative, and future earnings cover it, as with web sales. |
+| Self-purchase | Allowed, as for web sales. |
+| Referral rewards | Store sales count toward the referred agent's monthly target in the same way as web sales, using net amounts. |
+
+#### Agent types
+
+| | Partner | Employee |
+| --- | --- | --- |
+| Commission | Default rate or personal override | Always 0 |
+| Referral rewards | Yes | No |
+| Wallet and withdrawals | Yes | Hidden |
+| Sales tracking, dashboard, agent code, sale links | Yes | Yes |
+| Verification documents | Required | Not required |
+| Public directory | Listed | Hidden by default, with a switch |
+
+Journals with a zero amount are not posted. The sale and its attribution are still recorded for reporting.
+
+#### Integration
+
+| Direction | Endpoint |
+| --- | --- |
+| nahj_backend → marketplace | `GET /internal/v1/agent-codes/{code}` → `{valid, agentId, displayName, agentType}` |
+| nahj_backend → marketplace | `POST /internal/v1/store-sales`: `{store, storeTransactionId, originalTransactionId, userId, itemId, priceAmount, currency, purchasedAt, agentCode}`. Idempotent on `(store, storeTransactionId)`. |
+| nahj_backend → marketplace | `POST /internal/v1/store-sales/{store}/{storeTransactionId}/refund`: `{refundedAt, reason}`. Idempotent. |
+
+`nahj_backend` authenticates with its own Keycloak service client (`nahj-backend-service`). It sends these events through a local outbox table with retries, so no event is lost when the marketplace is down.
+
 ## 7. Identity and security
 
 ### 7.1 Sign in
@@ -600,6 +670,9 @@ Fulfillment is **instant at payment** (decision 17, 2026-10-23). The 30-minute s
 | 14 | Marketplace plans reference `nahj_backend` items by `itemId`, read through the API, with IDR prices in the marketplace catalog | Decided | Catalog, entitlement |
 | 15 | Web sells all five VIP items: Weekly, Monthly, 6-Month, Yearly, Lifetime | Confirmed 2026-10-18 | Catalog |
 | 17 | Fulfillment is instant at payment: direct units activated and codes published automatically; no seller delivery step and no 30-minute window | Confirmed 2026-10-23 (changes the approved spec rule Dev Ref §5.1) | Fulfillment, seller screens, jobs, acceptance tests T06–T08 |
+| 18 | App-store sales through agent codes (flow B, §6.9): commission on net, code saved on the user account and copied onto each order, no discount, earning currencies configurable (IDR first) | Confirmed 2026-10-25 (new channel, not in the specification) | nahj_backend, mobile apps, ledger |
+| 19 | Store commission hold: defaults Google 3 days, Apple 14 days; configurable per agent wallet | Confirmed 2026-10-25 | Ledger, seller settings |
+| 20 | Agent types: partner and employee (0% commission, no referral rewards, no wallet, hidden from directory by default) | Confirmed 2026-10-25 | Sellers, ledger, directory |
 | 16 | Refund windows: 48 h after activation (per plan); unused codes 30 days after payment; code commission released at redemption or period end. All configurable. | Confirmed 2026-10-21 | Catalog, refund, ledger |
 | 13 | Withdrawal approval: every withdrawal through Finance; second approver above a threshold | Decided (UX A11) | Wallet |
 

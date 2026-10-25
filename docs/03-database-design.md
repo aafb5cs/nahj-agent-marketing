@@ -495,3 +495,104 @@ The commission maturity job releases each unit's commission individually with a 
 1. Order reference format `NHO-YYMMDD-XXXX` and code format `NHJ-XXXX-XXXX-XXXX`.
 2. ~~When is an order completed?~~ Decided: at payment; fulfillment is instant (decision 17).
 3. ~~Who changes `nahj_backend`?~~ Decided: a separate session, using `docs/prompts/01-nahj-backend-vip-orders.md`.
+
+## 6. App-store sales through agent codes (flow B)
+
+See `system-architecture.md` §6.9 for the flow and rules.
+
+### 6.1 Marketplace tables (`nahj_market`)
+
+```sql
+ALTER TABLE sellers
+  ADD COLUMN agent_type              VARCHAR(12) NOT NULL DEFAULT 'partner', -- partner | employee
+  ADD COLUMN listed_in_directory     TINYINT(1)  NOT NULL DEFAULT 1,         -- employees default 0
+  ADD COLUMN store_hold_hours_google INT NULL,   -- NULL = market default (72)
+  ADD COLUMN store_hold_hours_apple  INT NULL;   -- NULL = market default (336)
+
+CREATE TABLE agent_codes (
+  id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  seller_id    BIGINT UNSIGNED NOT NULL,
+  code         VARCHAR(16)  NOT NULL UNIQUE,     -- AGT-7K2M3P, or an approved alias like TOKOILMU
+  kind         VARCHAR(8)   NOT NULL,            -- generated | alias
+  status       VARCHAR(12)  NOT NULL,            -- active, pending_review (alias), disabled
+  created_at   DATETIME(3)  NOT NULL,
+  disabled_at  DATETIME(3)  NULL,
+  KEY idx_seller (seller_id)
+);
+
+CREATE TABLE store_sales (
+  id                       BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  store                    VARCHAR(8)   NOT NULL,      -- google | apple
+  store_transaction_id     VARCHAR(128) NOT NULL,
+  original_transaction_id  VARCHAR(128) NULL,          -- Apple restore deduplication
+  user_account_id          VARCHAR(64)  NOT NULL,
+  item_id                  VARCHAR(64)  NOT NULL,
+  agent_code               VARCHAR(16)  NOT NULL,      -- as copied onto the nahj order
+  seller_id                BIGINT UNSIGNED NOT NULL,   -- frozen at recording time
+  agent_type               VARCHAR(12)  NOT NULL,      -- frozen
+  price_amount             BIGINT       NOT NULL,      -- whole units of `currency`
+  currency                 CHAR(3)      NOT NULL,
+  vat_bps                  INT          NOT NULL,      -- frozen market setting
+  store_fee_bps            INT          NOT NULL,      -- frozen market setting
+  net_amount               BIGINT       NOT NULL,      -- 0 when the currency does not earn
+  commission_bps           INT          NOT NULL,      -- 0 for employees
+  commission_amount        BIGINT       NOT NULL,
+  earns                    TINYINT(1)   NOT NULL,      -- currency is in the earning list
+  purchased_at             DATETIME(3)  NOT NULL,
+  hold_hours               INT          NOT NULL,      -- agent override or store default, frozen
+  commission_release_at    DATETIME(3)  NOT NULL,      -- purchased_at + hold_hours
+  status                   VARCHAR(16)  NOT NULL,      -- recorded, released, refunded
+  refunded_at              DATETIME(3)  NULL,
+  created_at               DATETIME(3)  NOT NULL,
+  UNIQUE KEY uq_store_tx (store, store_transaction_id),
+  KEY idx_seller_time (seller_id, purchased_at)
+);
+```
+
+Market settings added: `store_fee_bps_google`, `store_fee_bps_apple`, `store_vat_bps`, `store_hold_hours_google = 72`, `store_hold_hours_apple = 336`, `earning_currencies = ["IDR"]`.
+
+### 6.2 Ledger
+
+| Journal | Debit | Credit | Source |
+| --- | --- | --- | --- |
+| `store_commission_accrued` | commission_expense | seller pending | store sale |
+| `store_commission_matured` | seller pending | seller available | store sale, at `commission_release_at` |
+| `store_commission_reversed` | seller pending or available | commission_expense | store refund |
+
+Store revenue itself is not in the marketplace ledger. Google and Apple pay Nahj directly, and Finance books that from the store reports. Zero-amount journals are skipped.
+
+### 6.3 Changes in `nahj_backend` (schema `nahj`)
+
+```sql
+ALTER TABLE orders ADD COLUMN agent_code VARCHAR(16) NULL;   -- copied at completion
+
+-- users_attributes keys (existing key/value table):
+--   agent_code        = AGT-7K2M3P
+--   agent_code_set_at = 2026-10-25T08:00:00Z
+
+CREATE TABLE marketplace_outbox (
+  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  event_type    VARCHAR(24)  NOT NULL,       -- store_sale, store_refund
+  event_key     VARCHAR(160) NOT NULL UNIQUE, -- e.g. store_sale:google:GPA.1234
+  payload       JSON         NOT NULL,
+  attempts      INT          NOT NULL DEFAULT 0,
+  next_try_at   DATETIME(3)  NOT NULL,
+  sent_at       DATETIME(3)  NULL,
+  last_error    VARCHAR(255) NULL,
+  created_at    DATETIME(3)  NOT NULL
+);
+```
+
+The outbox row is written in the **same transaction** as the order completion or refund, so an event can never be lost or sent for a purchase that did not happen.
+
+### 6.4 Example
+
+| Step | Row |
+| --- | --- |
+| Agent shares `AGT-7K2M3P` | `agent_codes` (active) |
+| User enters it | `users_attributes.agent_code = AGT-7K2M3P` |
+| User buys Monthly in Google Play for Rp75,000 | `nahj.orders` row with `agent_code`, VIP period; `marketplace_outbox` store_sale |
+| Event arrives | `store_sales`: price 75,000 IDR, VAT 11%, fee 15%, net 57,431, commission 10% = 5,743, release in 72 h; journal `store_commission_accrued` |
+| 72 hours later, no refund | `store_commission_matured` → Available |
+| (If refunded inside 48 h) | `nahj` removes unused days; store_refund event; `store_commission_reversed`; the sale is marked refunded |
+

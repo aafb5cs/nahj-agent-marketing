@@ -65,7 +65,7 @@ footer { color: var(--muted); font-size: 0.85rem; }
 <div class="wrap">
   <header>
     <span class="eyebrow">Nahj Seller Marketplace · Indonesia V1</span>
-    <h1>The five journeys as flowcharts</h1>
+    <h1>The six journeys as flowcharts</h1>
     <p class="lede">Each chart follows one journey through the people and systems involved, with every decision point and its branches. Rules and story IDs sit beside each chart. Decisions are as recorded on 24 Oct 2026.</p>
     <nav aria-label="Flows">
       <a href="#purchase">1 · Purchase</a>
@@ -73,6 +73,7 @@ footer { color: var(--muted); font-size: 0.85rem; }
       <a href="#refund">3 · Refund</a>
       <a href="#money">4 · Commission and withdrawal</a>
       <a href="#onboarding">5 · Seller onboarding</a>
+      <a href="#store">6 · App purchase with agent code</a>
     </nav>
     <div class="legend" id="legend" aria-label="Colour key"></div>
   </header>
@@ -345,6 +346,57 @@ flowchart TD
           <li>Withdrawal holds need a Finance capability.</li>
         </ul>
         <p class="ids">SEL-01 · SEL-02 · SEL-03 · SEL-11 · SM-01 · SM-02 · SM-03 · T20</p>
+      </aside>
+    </div>
+  </section>
+
+
+  <section class="flow" id="store" aria-labelledby="h-store">
+    <div class="flow-head"><span class="eyebrow">Flow 6</span><h2 id="h-store">App purchase with an agent code</h2>
+      <p>A second sales channel. The user pays Google or Apple inside the Nahj app; the agent code saved on the account credits the agent.</p></div>
+    <div class="flow-body">
+      <figure>
+<div class="diagram" id="d5" role="img" aria-label="Flowchart 6"><p class="loading">Drawing diagram…</p></div>
+<script type="text/plain" class="flow-src" id="src5">
+flowchart TD
+  A["Agent shares AGT-7K2M3P<br/>code, link or QR"] --> B["User enters code in the app<br/>or opens the link"]
+  B --> C{"Marketplace says<br/>code is valid?"}
+  C -->|no| C1["This agent code is not valid<br/>purchase still possible"]
+  C -->|yes| D["Saved on the account<br/>app shows Agent: Toko Ilmu"]
+  D --> E["User buys VIP in Google Play<br/>or App Store, normal price"]
+  E --> F["nahj_backend verifies receipt<br/>adds VIP time at the end"]
+  F --> G["Copies agent code onto the order<br/>writes outbox event, same transaction"]
+  G -->|retried until delivered| H{"Already recorded<br/>for this store transaction?"}
+  H -->|yes| H1["Ignored, no double credit"]
+  H -->|no| I{"Currency earns?<br/>IDR first"}
+  I -->|no| I1["Recorded, no commission"]
+  I -->|yes| J["Net = price without VAT, minus store fee<br/>commission = net x agent rate<br/>employee rate is 0"]
+  J --> K["Commission into Pending"]
+  K --> L{"Store refund before<br/>the hold ends?"}
+  L -->|yes| M["nahj_backend removes unused days<br/>commission reversed"]
+  L -->|no| N["Hold ends: Google 3 days, Apple 14 days<br/>or the agent's own setting"]
+  N --> O["Available, withdraw as usual"]
+  O -.->|late refund| P["Reversed, covered by<br/>future earnings"]
+  class A seller
+  class B,D,E buyer
+  class C,H,I,L dec
+  class C1,H1,M,P bad
+  class F,G nb
+  class I1,J,K,N mp
+  class O ok
+</script>
+        <figcaption>The code is copied onto the order when the purchase completes, so changing the code later never moves a past sale to another agent. The user pays the normal store price.</figcaption>
+      </figure>
+      <aside>
+        <h3>Rules</h3>
+        <ul>
+          <li>One permanent code per agent: AGT- plus 6 characters, or an approved alias.</li>
+          <li>No discount for the user (UX C04).</li>
+          <li>An Apple restore never counts as a new sale.</li>
+          <li>Store fee, VAT, holds and earning currencies are settings; holds can be set per agent wallet.</li>
+          <li>Not in the original specification: added 25 Oct 2026.</li>
+        </ul>
+        <p class="ids">CUS-11 · SEL-12 · SM-04 · SYS-06 · SYS-07 · ADM-05</p>
       </aside>
     </div>
   </section>
