@@ -162,275 +162,295 @@ Example, continuing 2.3. The store Monthly is refunded on Jan 15:
 
 ## 3. Marketplace tables for orders (schema `nahj_market`)
 
+The full schema is **31 tables**; `database-tables.html` lists every table and column and is the source of truth. It was optimized on 2026-10-25 from a first draft of 73 tables. This section shows the tables these flows use.
+
 ### 3.1 Overview
 
 ```mermaid
 erDiagram
     customers ||--o{ orders : places
     sellers ||--o{ sale_requests : creates
-    sale_requests ||--o{ sale_quotes : "priced by"
+    sellers ||--o{ orders : "attributed to"
     sale_requests ||--o{ orders : "claimed as (one active)"
-    plan_versions ||--o{ sale_quotes : ""
-    orders ||--o{ payment_attempts : ""
+    plans ||--o{ orders : "snapshot of"
+    orders ||--o{ payment_attempts : "web channel"
     payment_attempts ||--o{ provider_events : ""
-    orders ||--|{ purchased_units : "1 per quantity"
-    purchased_units ||--o{ activation_credentials : "code + replacements"
-    activation_credentials ||--o| redemptions : ""
-    purchased_units ||--o| entitlement_grants : "VIP time in nahj"
-    orders ||--o{ deliveries : ""
+    orders ||--|{ units : "1 per quantity"
+    units ||--o{ codes : "code + replacements"
     orders ||--o{ refunds : ""
-    refunds ||--|{ refund_units : ""
-    purchased_units ||--o{ refund_units : ""
+    refunds ||--o{ units : "refund_id"
 ```
 
-### 3.2 Catalog: what is sold
+Main ideas:
+
+- **One `orders` table for both channels.** A web order comes from a sale link and is paid by QRIS or VA. A store order (`channel = store`) is an in-app purchase credited by an agent code; it is already paid and always has one unit.
+- **`units` carries everything per unit:** price, commission and its release state, the VIP grant in `nahj_backend` (`grant_client_order_id`, `vip_start`, `vip_end`), refund deadline and refund link.
+- **`codes` carries the activation code**, its replacement chain and who redeemed it.
+
+### 3.2 Draft SQL
+
+Generated from `database-tables.html`.
 
 ```sql
-CREATE TABLE plan_versions (
-  id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  plan_code             VARCHAR(32)  NOT NULL,          -- weekly, monthly, 6month, yearly, lifetime
-  version               INT          NOT NULL,
-  status                VARCHAR(16)  NOT NULL,          -- draft, scheduled, published, retired
-  item_id               VARCHAR(64)  NOT NULL,          -- nahj_backend item, e.g. vip_pass_monthly
-  duration_days         INT          NOT NULL,          -- copied from the item when published
-  is_lifetime           TINYINT(1)   NOT NULL DEFAULT 0,
-  unit_price            BIGINT       NOT NULL,          -- IDR
-  commission_bps        INT          NOT NULL,          -- default seller rate, 1000 = 10.00%
-  refund_window_hours   INT          NOT NULL DEFAULT 48,
-  unused_refund_days    INT          NOT NULL DEFAULT 30,
-  max_quantity          INT          NOT NULL,
-  effective_from        DATETIME(3)  NOT NULL,
-  created_by            BIGINT UNSIGNED NOT NULL,
-  approved_by           BIGINT UNSIGNED NULL,
-  UNIQUE KEY uq_plan_version (plan_code, version)
-);
-```
+-- plans
+CREATE TABLE plans (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  plan_code VARCHAR(32) NOT NULL,
+  version INT NOT NULL,
+  status VARCHAR(12) NOT NULL,
+  effective_from DATETIME(3) NULL,
+  item_id VARCHAR(64) NOT NULL,
+  duration_days INT NOT NULL,
+  is_lifetime TINYINT(1) NOT NULL DEFAULT 0,
+  unit_price BIGINT NOT NULL,
+  commission_bps INT NOT NULL,
+  store_base_price BIGINT NOT NULL,
+  store_commission_bps INT NOT NULL,
+  refund_window_hours INT NOT NULL DEFAULT 48,
+  unused_refund_days INT NOT NULL DEFAULT 30,
+  max_quantity INT NOT NULL,
+  web_enabled TINYINT(1) NOT NULL DEFAULT 1,
+  display_order INT NOT NULL DEFAULT 0,
+  created_by BIGINT UNSIGNED NOT NULL,
+  approval_id BIGINT UNSIGNED NULL,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY (plan_code, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-A published version is never edited. A price change is a new version, and existing orders keep the version they were sold under.
-
-### 3.3 Customers
-
-```sql
+-- customers
 CREATE TABLE customers (
-  account_id      VARCHAR(64)  PRIMARY KEY,   -- Keycloak sub = nahj users.id
-  display_name    VARCHAR(128) NULL,
-  email_masked    VARCHAR(128) NULL,          -- e.g. a***@gmail.com; full email stays in Keycloak
-  status          VARCHAR(16)  NOT NULL DEFAULT 'active',
-  risk_flag       VARCHAR(32)  NULL,
-  first_order_at  DATETIME(3)  NULL,
-  last_order_at   DATETIME(3)  NULL,
-  created_at      DATETIME(3)  NOT NULL,
-  anonymized_at   DATETIME(3)  NULL
-);
-```
+  account_id VARCHAR(64) NOT NULL,
+  display_name VARCHAR(128) NULL,
+  email_masked VARCHAR(128) NULL,
+  status VARCHAR(12) NOT NULL DEFAULT 'active',
+  risk_flag VARCHAR(32) NULL,
+  first_order_at DATETIME(3) NULL,
+  last_order_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL,
+  anonymized_at DATETIME(3) NULL,
+  PRIMARY KEY (account_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-A bulk buyer is a normal customer; quantity is a property of the order, not of the person.
-
-### 3.4 Sale request, quote and order
-
-```sql
+-- sale_requests
 CREATE TABLE sale_requests (
-  id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  token                 CHAR(32)     NOT NULL UNIQUE,     -- opaque link token
-  seller_id             BIGINT UNSIGNED NOT NULL,
-  plan_code             VARCHAR(32)  NOT NULL,
-  quantity              INT          NOT NULL,
-  fulfillment_mode      VARCHAR(8)   NOT NULL,            -- direct | codes
-  status                VARCHAR(16)  NOT NULL,            -- draft, awaiting, claimed, expired, revoked
-  expires_at            DATETIME(3)  NOT NULL,
-  claimed_by_account_id VARCHAR(64)  NULL,
-  claimed_at            DATETIME(3)  NULL,
-  version               INT          NOT NULL DEFAULT 1,
-  created_at            DATETIME(3)  NOT NULL
-);
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  token CHAR(32) NOT NULL UNIQUE,
+  seller_id BIGINT UNSIGNED NOT NULL,
+  plan_code VARCHAR(32) NOT NULL,
+  quantity INT NOT NULL,
+  fulfillment_mode VARCHAR(8) NOT NULL,
+  status VARCHAR(12) NOT NULL,
+  expires_at DATETIME(3) NOT NULL,
+  quote_plan_id BIGINT UNSIGNED NULL,
+  quote_unit_price BIGINT NULL,
+  quote_total BIGINT NULL,
+  quote_commission_bps INT NULL,
+  quote_expires_at DATETIME(3) NULL,
+  quote_version INT NOT NULL DEFAULT 0,
+  claimed_by_account_id VARCHAR(64) NULL,
+  claimed_at DATETIME(3) NULL,
+  version INT NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-CREATE TABLE sale_quotes (
-  id               BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  sale_request_id  BIGINT UNSIGNED NOT NULL,
-  plan_version_id  BIGINT UNSIGNED NOT NULL,
-  quantity         INT     NOT NULL,
-  unit_price       BIGINT  NOT NULL,
-  total            BIGINT  NOT NULL,
-  commission_bps   INT     NOT NULL,          -- seller override or default, resolved now
-  expires_at       DATETIME(3) NOT NULL,
-  created_at       DATETIME(3) NOT NULL
-);
-
+-- orders
 CREATE TABLE orders (
-  id                      BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  reference               VARCHAR(20)  NOT NULL UNIQUE,     -- NHO-261023-7K2M
-  buyer_account_id        VARCHAR(64)  NOT NULL,
-  seller_id               BIGINT UNSIGNED NOT NULL,
-  sale_request_id         BIGINT UNSIGNED NULL,
-  active_flag             TINYINT      NULL,                -- 1 = active order of the request
-  replaces_order_id       BIGINT UNSIGNED NULL,
-  quote_id                BIGINT UNSIGNED NOT NULL,
-  -- frozen snapshot
-  plan_version_id         BIGINT UNSIGNED NOT NULL,
-  item_id                 VARCHAR(64)  NOT NULL,
-  duration_days           INT          NOT NULL,
-  is_lifetime             TINYINT(1)   NOT NULL,
-  quantity                INT          NOT NULL,
-  unit_price              BIGINT       NOT NULL,
-  total                   BIGINT       NOT NULL,
-  currency                CHAR(3)      NOT NULL DEFAULT 'IDR',
-  commission_bps          INT          NOT NULL,
-  referral_bps            INT          NULL,
-  referrer_seller_id      BIGINT UNSIGNED NULL,
-  refund_window_hours     INT          NOT NULL,
-  unused_refund_days      INT          NOT NULL,
-  accepted_policies       JSON         NOT NULL,            -- {"terms": "v3", "refund": "v2"}
-  fulfillment_mode        VARCHAR(8)   NOT NULL,            -- direct | codes
-  -- independent statuses
-  payment_status          VARCHAR(16)  NOT NULL,            -- unpaid, awaiting, checking, paid, attempt_ended
-  fulfillment_status      VARCHAR(16)  NOT NULL,            -- not_started, completed, recovery (fulfillment is instant at payment)
-  refund_status           VARCHAR(16)  NOT NULL DEFAULT 'none', -- none, requested, processing, partial, full
-  winning_attempt_id      BIGINT UNSIGNED NULL UNIQUE,
-  payment_confirmed_at    DATETIME(3)  NULL,                -- set once
-  settled_at              DATETIME(3)  NULL,                -- provider settlement time
-  version                 INT          NOT NULL DEFAULT 1,
-  created_at              DATETIME(3)  NOT NULL,
-  UNIQUE KEY uq_active_order (sale_request_id, active_flag),
-  CONSTRAINT chk_direct_qty CHECK (fulfillment_mode = 'codes' OR quantity = 1)
-);
-```
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  reference VARCHAR(20) NOT NULL UNIQUE,
+  channel VARCHAR(6) NOT NULL,
+  buyer_account_id VARCHAR(64) NOT NULL,
+  seller_id BIGINT UNSIGNED NOT NULL,
+  sale_request_id BIGINT UNSIGNED NULL,
+  active_flag TINYINT NULL,
+  replaces_order_id BIGINT UNSIGNED NULL,
+  plan_id BIGINT UNSIGNED NOT NULL,
+  item_id VARCHAR(64) NOT NULL,
+  duration_days INT NOT NULL,
+  is_lifetime TINYINT(1) NOT NULL,
+  quantity INT NOT NULL,
+  unit_price BIGINT NOT NULL,
+  total BIGINT NOT NULL,
+  currency CHAR(3) NOT NULL DEFAULT 'IDR',
+  commission_bps INT NOT NULL,
+  referral_bps INT NULL,
+  referrer_seller_id BIGINT UNSIGNED NULL,
+  refund_window_hours INT NOT NULL,
+  unused_refund_days INT NOT NULL,
+  accepted_policies JSON NULL,
+  fulfillment_mode VARCHAR(8) NOT NULL,
+  payment_status VARCHAR(16) NOT NULL,
+  fulfillment_status VARCHAR(16) NOT NULL,
+  refund_status VARCHAR(16) NOT NULL DEFAULT 'none',
+  winning_attempt_id BIGINT UNSIGNED NULL UNIQUE,
+  payment_confirmed_at DATETIME(3) NULL,
+  settled_at DATETIME(3) NULL,
+  store VARCHAR(8) NULL,
+  store_transaction_id VARCHAR(128) NULL,
+  original_transaction_id VARCHAR(128) NULL,
+  nahj_order_id VARCHAR(64) NULL,
+  agent_code VARCHAR(16) NULL,
+  reported_price BIGINT NULL,
+  reported_currency CHAR(3) NULL,
+  earns TINYINT(1) NOT NULL DEFAULT 1,
+  store_hold_hours INT NULL,
+  version INT NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY (sale_request_id, active_flag),
+  UNIQUE KEY (store, store_transaction_id),
+  CHECK (fulfillment_mode = 'codes' OR quantity = 1),
+  KEY (buyer_account_id, created_at),
+  KEY (seller_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-### 3.5 Payment
-
-```sql
+-- payment_attempts
 CREATE TABLE payment_attempts (
-  id                      BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  order_id                BIGINT UNSIGNED NOT NULL,
-  provider                VARCHAR(16)  NOT NULL,      -- xendit, midtrans, fake
-  method                  VARCHAR(24)  NOT NULL,      -- qris, va_bca, gopay, ...
-  route_version           INT          NOT NULL,
-  merchant_id             VARCHAR(64)  NOT NULL,
-  expected_amount         BIGINT       NOT NULL,
-  received_amount         BIGINT       NULL,
-  currency                CHAR(3)      NOT NULL,
-  provider_reference      VARCHAR(128) NULL,          -- provider's ID for this attempt
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id BIGINT UNSIGNED NOT NULL,
+  provider VARCHAR(16) NOT NULL,
+  method VARCHAR(24) NOT NULL,
+  route_version INT NOT NULL,
+  merchant_id VARCHAR(64) NOT NULL,
+  expected_amount BIGINT NOT NULL,
+  received_amount BIGINT NULL,
+  currency CHAR(3) NOT NULL,
+  provider_reference VARCHAR(128) NULL,
   provider_transaction_id VARCHAR(128) NULL,
-  status                  VARCHAR(16)  NOT NULL,      -- pending, succeeded, failed, expired, unknown
-  instructions            JSON         NULL,          -- QR string or VA number, never a secret
-  expires_at              DATETIME(3)  NULL,
-  succeeded_at            DATETIME(3)  NULL,
-  settled_at              DATETIME(3)  NULL,
-  created_at              DATETIME(3)  NOT NULL,
-  UNIQUE KEY uq_provider_tx (provider, provider_transaction_id)
-);
+  status VARCHAR(12) NOT NULL,
+  instructions JSON NULL,
+  expires_at DATETIME(3) NULL,
+  succeeded_at DATETIME(3) NULL,
+  settled_at DATETIME(3) NULL,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY (provider, provider_transaction_id),
+  KEY (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- provider_events
 CREATE TABLE provider_events (
-  id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  provider     VARCHAR(16)  NOT NULL,
-  event_id     VARCHAR(128) NOT NULL,
-  attempt_id   BIGINT UNSIGNED NULL,
-  payload      JSON         NOT NULL,                 -- raw body, stored first
-  received_at  DATETIME(3)  NOT NULL,
-  processed_at DATETIME(3)  NULL,
-  result       VARCHAR(32)  NULL,                     -- accepted, duplicate, mismatch, ignored
-  UNIQUE KEY uq_event (provider, event_id)
-);
-```
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  provider VARCHAR(16) NOT NULL,
+  kind VARCHAR(8) NOT NULL,
+  event_id VARCHAR(128) NOT NULL,
+  attempt_id BIGINT UNSIGNED NULL,
+  payload JSON NOT NULL,
+  received_at DATETIME(3) NOT NULL,
+  processed_at DATETIME(3) NULL,
+  result VARCHAR(16) NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY (provider, event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-### 3.6 Units, codes and grants: where bulk happens
+-- units
+CREATE TABLE units (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id BIGINT UNSIGNED NOT NULL,
+  unit_index INT NOT NULL,
+  unit_price BIGINT NOT NULL,
+  commission_amount BIGINT NOT NULL,
+  referral_amount BIGINT NOT NULL DEFAULT 0,
+  reversible_amount BIGINT NOT NULL,
+  status VARCHAR(20) NOT NULL,
+  activated_account_id VARCHAR(64) NULL,
+  activated_at DATETIME(3) NULL,
+  refund_deadline_at DATETIME(3) NOT NULL,
+  grant_client_order_id VARCHAR(64) NULL UNIQUE,
+  grant_status VARCHAR(16) NULL,
+  vip_start DATETIME(3) NULL,
+  vip_end DATETIME(3) NULL,
+  commission_status VARCHAR(12) NOT NULL,
+  commission_release_at DATETIME(3) NULL,
+  refund_id BIGINT UNSIGNED NULL,
+  version INT NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  UNIQUE KEY (order_id, unit_index),
+  KEY (order_id, status),
+  KEY (commission_status, commission_release_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-```sql
-CREATE TABLE purchased_units (
-  id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  order_id              BIGINT UNSIGNED NOT NULL,
-  unit_index            INT          NOT NULL,          -- 1..quantity
-  unit_price            BIGINT       NOT NULL,
-  commission_amount     BIGINT       NOT NULL,
-  referral_amount       BIGINT       NOT NULL DEFAULT 0,
-  reversible_amount     BIGINT       NOT NULL,          -- what a refund or chargeback can still take back
-  status                VARCHAR(20)  NOT NULL,
-      -- awaiting_fulfillment → issued (code) → redeemed → activated
-      -- awaiting_fulfillment → activated (direct)
-      -- any unused → reserved (refund approved) → refunded | back to previous
-      -- voided (chargeback on an unused code)
-  activated_account_id  VARCHAR(64)  NULL,
-  activated_at          DATETIME(3)  NULL,
-  refund_deadline_at    DATETIME(3)  NOT NULL,          -- see 4.4
-  commission_release_at DATETIME(3)  NULL,              -- see 4.5
-  version               INT          NOT NULL DEFAULT 1,
-  UNIQUE KEY uq_unit (order_id, unit_index),
-  KEY idx_order_status (order_id, status)
-);
+-- codes
+CREATE TABLE codes (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  unit_id BIGINT UNSIGNED NOT NULL,
+  code_hash BINARY(32) NOT NULL UNIQUE,
+  code_encrypted VARBINARY(256) NOT NULL,
+  code_last4 CHAR(4) NOT NULL,
+  status VARCHAR(12) NOT NULL,
+  live_flag TINYINT NULL,
+  replaces_code_id BIGINT UNSIGNED NULL,
+  published_at DATETIME(3) NULL,
+  redeemed_account_id VARCHAR(64) NULL,
+  redeemed_at DATETIME(3) NULL,
+  redeem_operation_key VARCHAR(64) NULL UNIQUE,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY (unit_id, live_flag)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-CREATE TABLE activation_credentials (
-  id                     BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  unit_id                BIGINT UNSIGNED NOT NULL,
-  code_hash              BINARY(32)   NOT NULL UNIQUE,  -- HMAC-SHA256(code), used for lookup
-  code_encrypted         VARBINARY(256) NOT NULL,       -- AES-GCM, for showing the code again
-  code_last4             CHAR(4)      NOT NULL,         -- for masked display
-  status                 VARCHAR(12)  NOT NULL,         -- live, consumed, voided
-  live_flag              TINYINT      NULL,             -- 1 while live
-  replaces_credential_id BIGINT UNSIGNED NULL,
-  published_at           DATETIME(3)  NULL,             -- visible in the buyer's purchases
-  created_at             DATETIME(3)  NOT NULL,
-  UNIQUE KEY uq_live_code (unit_id, live_flag)
-);
-
-CREATE TABLE redemptions (
-  id             BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  credential_id  BIGINT UNSIGNED NOT NULL UNIQUE,
-  account_id     VARCHAR(64)  NOT NULL,
-  operation_key  VARCHAR(64)  NOT NULL UNIQUE,
-  created_at     DATETIME(3)  NOT NULL
-);
-
-CREATE TABLE entitlement_grants (
-  unit_id          BIGINT UNSIGNED PRIMARY KEY,         -- one grant per unit
-  account_id       VARCHAR(64)  NOT NULL,
-  client_order_id  VARCHAR(64)  NOT NULL UNIQUE,        -- "mk-unit-{unit_id}" in nahj.orders
-  status           VARCHAR(16)  NOT NULL,               -- requested, granted, refund_requested, refunded, failed
-  vip_start        DATETIME(3)  NULL,                   -- as returned by nahj_backend
-  vip_end          DATETIME(3)  NULL,
-  refunded_seconds BIGINT       NULL,
-  updated_at       DATETIME(3)  NOT NULL
-);
-
-CREATE TABLE deliveries (
-  id          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  order_id    BIGINT UNSIGNED NOT NULL,
-  unit_ids    JSON         NOT NULL,
-  channel     VARCHAR(12)  NOT NULL,      -- portal, email, copy, share, export
-  actor       VARCHAR(64)  NOT NULL,      -- seller ID or 'system'
-  status      VARCHAR(12)  NOT NULL,      -- done, queued, failed
-  created_at  DATETIME(3)  NOT NULL
-);
-```
-
-The bulk design in one sentence: **an order of 10 codes is one `orders` row and 10 `purchased_units` rows, and every unit carries its own price, commission, code, status, refund deadline and grant.** That is what makes "4 used, refund the other 6" work.
-
-### 3.7 Refunds
-
-```sql
+-- refunds
 CREATE TABLE refunds (
-  id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  order_id          BIGINT UNSIGNED NOT NULL,
-  attempt_id        BIGINT UNSIGNED NOT NULL,           -- the payment being refunded
-  kind              VARCHAR(12)  NOT NULL,              -- units, surplus
-  amount            BIGINT       NOT NULL,
-  reason            VARCHAR(255) NOT NULL,
-  status            VARCHAR(16)  NOT NULL,              -- requested, approved, processing, succeeded, failed, rejected
-  refund_method     VARCHAR(12)  NULL,                  -- provider, payout
-  provider_command  VARCHAR(128) NULL,
-  payout_id         BIGINT UNSIGNED NULL,
-  requested_by      VARCHAR(64)  NOT NULL,
-  approved_by       BIGINT UNSIGNED NULL,
-  version           INT          NOT NULL DEFAULT 1,
-  created_at        DATETIME(3)  NOT NULL
-);
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  order_id BIGINT UNSIGNED NOT NULL,
+  attempt_id BIGINT UNSIGNED NULL,
+  kind VARCHAR(12) NOT NULL,
+  amount BIGINT NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  method VARCHAR(12) NULL,
+  provider_command VARCHAR(128) NULL,
+  provider_case_id VARCHAR(128) NULL,
+  deadline_at DATETIME(3) NULL,
+  payout_destination JSON NULL,
+  payout_provider VARCHAR(16) NULL,
+  payout_key VARCHAR(64) NULL UNIQUE,
+  payout_ref VARCHAR(128) NULL,
+  requested_by VARCHAR(80) NOT NULL,
+  approved_by BIGINT UNSIGNED NULL,
+  version INT NOT NULL DEFAULT 1,
+  created_at DATETIME(3) NOT NULL,
+  PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
-CREATE TABLE refund_units (
-  refund_id   BIGINT UNSIGNED NOT NULL,
-  unit_id     BIGINT UNSIGNED NOT NULL,
-  amount      BIGINT NOT NULL,                          -- the unit's original price
-  commission  BIGINT NOT NULL,                          -- the unit's original commission
-  PRIMARY KEY (refund_id, unit_id)
-);
+-- sellers
+CREATE TABLE sellers (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  account_id VARCHAR(64) NOT NULL UNIQUE,
+  agent_type VARCHAR(12) NOT NULL DEFAULT 'partner',
+  application_status VARCHAR(16) NOT NULL,
+  operating_status VARCHAR(12) NOT NULL,
+  display_name VARCHAR(80) NOT NULL,
+  display_name_norm VARCHAR(80) NOT NULL UNIQUE,
+  city VARCHAR(64) NOT NULL,
+  bio VARCHAR(500) NULL,
+  logo_file_id BIGINT UNSIGNED NULL,
+  contact JSON NULL,
+  phone_masked VARCHAR(32) NULL,
+  listed_in_directory TINYINT(1) NOT NULL DEFAULT 1,
+  referrer_seller_id BIGINT UNSIGNED NULL,
+  agent_code VARCHAR(16) NULL UNIQUE,
+  agent_alias VARCHAR(16) NULL UNIQUE,
+  commission_bps INT NULL,
+  store_commission_bps INT NULL,
+  store_hold_hours_google INT NULL,
+  store_hold_hours_apple INT NULL,
+  mfa_verified_at DATETIME(3) NULL,
+  terms_policy_id BIGINT UNSIGNED NULL,
+  terms_accepted_at DATETIME(3) NULL,
+  onboarded_at DATETIME(3) NULL,
+  reviewer_staff_id BIGINT UNSIGNED NULL,
+  decided_at DATETIME(3) NULL,
+  decision_reason VARCHAR(255) NULL,
+  created_at DATETIME(3) NOT NULL,
+  version INT NOT NULL DEFAULT 1,
+  PRIMARY KEY (id),
+  KEY (operating_status, listed_in_directory, city)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 ```
+
+The bulk design in one sentence: **an order of 10 codes is one `orders` row, 10 `units` rows and 10 `codes` rows, and every unit carries its own price, commission, status, refund deadline and grant.** That is what makes "4 used, refund the other 6" work.
 
 ## 4. Flows
 
@@ -439,23 +459,23 @@ CREATE TABLE refund_units (
 | Step | What happens | Rows |
 | --- | --- | --- |
 | 1 | The seller creates a request for Monthly × 1, direct | `sale_requests` (awaiting) |
-| 2 | The buyer opens the link, signs in, sees a quote | `customers` (if new), `sale_quotes` |
+| 2 | The buyer opens the link, signs in, sees a quote | `customers` (if new), the quote columns on `sale_requests` |
 | 3 | The buyer confirms | One transaction: `sale_requests` → claimed; `orders` (unpaid, snapshot); outbox: none |
 | 4 | The buyer picks QRIS | `payment_attempts` (pending) through the route; QR returned |
-| 5 | The provider webhook says paid | One transaction (§10.1 of the architecture): `provider_events`; order → paid, `payment_confirmed_at`; **1** `purchased_units` row (awaiting_fulfillment); ledger `payment_accepted`, `commission_accrued`; **instant fulfillment:** `entitlement_grants` (requested), outbox: create-grant call with `rejectIfLifetime`; outbox: notifications |
+| 5 | The provider webhook says paid | One transaction (§10.1 of the architecture): `provider_events`; order → paid, `payment_confirmed_at`; **1** `units` row (awaiting_fulfillment); ledger `payment_accepted`, `commission_accrued`; **instant fulfillment:** the grant columns on `units` (requested), outbox: create-grant call with `rejectIfLifetime`; outbox: notifications |
 | 6 | (no seller step) | Fulfillment is instant at payment (decision 17). |
 | 7 | The worker calls `nahj_backend` | `nahj.orders` row `mk-unit-{id}` with its VIP period (§2.3) |
-| 8 | Grant confirmed | `entitlement_grants` → granted, VIP dates stored; unit → activated, `activated_at`, `refund_deadline_at = activated_at + 48 h`; order → completed; outbox: "subscription activated" notification |
+| 8 | Grant confirmed | the grant columns on `units` → granted, VIP dates stored; unit → activated, `activated_at`, `refund_deadline_at = activated_at + 48 h`; order → completed; outbox: "subscription activated" notification |
 
 ### 4.2 Bulk order: 10 Yearly codes
 
 | Step | What happens | Rows |
 | --- | --- | --- |
-| 1–4 | As above, with Yearly × 10, codes | `sale_requests`, `sale_quotes`, `orders` (quantity 10), `payment_attempts` |
-| 5 | Payment accepted | Same transaction: **10** `purchased_units` (index 1..10, status issued); **10** `activation_credentials` (live, `published_at = now`); `refund_deadline_at = payment_confirmed_at + 30 days` on each; ledger `commission_accrued` × 10; `deliveries` (portal, actor `system`); outbox: email linking to "My Purchases"; order fulfillment → completed |
+| 1–4 | As above, with Yearly × 10, codes | `sale_requests`, the quote columns on `sale_requests`, `orders` (quantity 10), `payment_attempts` |
+| 5 | Payment accepted | Same transaction: **10** `units` (index 1..10, status issued); **10** `codes` (live, `published_at = now`); `refund_deadline_at = payment_confirmed_at + 30 days` on each; ledger `commission_accrued` × 10; `codes.published_at` (portal, actor `system`); outbox: email linking to "My Purchases"; order fulfillment → completed |
 | 6 | (no seller step) | Codes are visible to the buyer immediately (decision 17). |
 | 7 | The buyer sees 10 codes in "My Purchases" and gives them to children | Reveals are audited; no rows about who received them |
-| 8 | A child redeems code #3 on their own account | One transaction: credential locked → consumed; `redemptions`; unit #3 → redeemed, `activated_account_id`; `entitlement_grants` (requested); outbox: create-grant |
+| 8 | A child redeems code #3 on their own account | One transaction: credential locked → consumed; `codes` (redeemed columns); unit #3 → redeemed, `activated_account_id`; the grant columns on `units` (requested); outbox: create-grant |
 | 9 | Grant confirmed | Unit #3 → activated, `activated_at`; `refund_deadline_at = activated_at + 48 h`; commission on unit #3 can now be released once 168 h have passed |
 
 The order's fulfillment status is "completed" at payment, when every code is published; it does not wait for redemptions (confirmed 2026-10-23).
@@ -466,7 +486,7 @@ The order's fulfillment status is "completed" at payment, when every code is pub
 | --- | --- | --- |
 | 1 | The buyer asks for a refund within 30 days of payment | `refunds` (requested); support case. Nothing is reserved yet. |
 | 2 | Finance reviews | The screen shows only unused units (status `issued`) with `refund_deadline_at > now`: here units 1, 2, 4, 5, 6, 7 |
-| 3 | Finance approves the six | One transaction: those six units locked and re-checked (still unused?), → reserved; credentials → voided (they can no longer be redeemed); `refund_units` × 6 with each unit's original price and commission; ledger `refund_approved`; outbox: provider refund, or a payout if the method cannot refund (VA) |
+| 3 | Finance approves the six | One transaction: those six units locked and re-checked (still unused?), → reserved; credentials → voided (they can no longer be redeemed); `units.refund_id` × 6 with each unit's original price and commission; ledger `refund_approved`; outbox: provider refund, or a payout if the method cannot refund (VA) |
 | 4 | Provider confirms | Units → refunded; `reversible_amount` reduced; ledger `refund_completed`, `commission_reversed` × 6; order `refund_status = partial`; referral month requalified |
 | 5 | Provider fails definitively | Finance retries, or rolls back: units return to their previous status and the credentials are restored, with an audit record |
 
@@ -500,54 +520,22 @@ The commission maturity job releases each unit's commission individually with a 
 
 See `system-architecture.md` §6.9 for the flow and rules.
 
-### 6.1 Marketplace tables (`nahj_market`)
+### 6.1 Marketplace side (`nahj_market`)
 
-```sql
-ALTER TABLE sellers
-  ADD COLUMN agent_type              VARCHAR(12) NOT NULL DEFAULT 'partner', -- partner | employee
-  ADD COLUMN listed_in_directory     TINYINT(1)  NOT NULL DEFAULT 1,         -- employees default 0
-  ADD COLUMN store_hold_hours_google INT NULL,   -- NULL = market default (72)
-  ADD COLUMN store_hold_hours_apple  INT NULL;   -- NULL = market default (336)
+No extra tables. Flow B uses:
 
-CREATE TABLE agent_codes (
-  id           BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  seller_id    BIGINT UNSIGNED NOT NULL,
-  code         VARCHAR(16)  NOT NULL UNIQUE,     -- AGT-7K2M3P, or an approved alias like TOKOILMU
-  kind         VARCHAR(8)   NOT NULL,            -- generated | alias
-  status       VARCHAR(12)  NOT NULL,            -- active, pending_review (alias), disabled
-  created_at   DATETIME(3)  NOT NULL,
-  disabled_at  DATETIME(3)  NULL,
-  KEY idx_seller (seller_id)
-);
-
-CREATE TABLE store_sales (
-  id                       BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  store                    VARCHAR(8)   NOT NULL,      -- google | apple
-  store_transaction_id     VARCHAR(128) NOT NULL,
-  original_transaction_id  VARCHAR(128) NULL,          -- Apple restore deduplication
-  user_account_id          VARCHAR(64)  NOT NULL,
-  item_id                  VARCHAR(64)  NOT NULL,
-  agent_code               VARCHAR(16)  NOT NULL,      -- as copied onto the nahj order
-  seller_id                BIGINT UNSIGNED NOT NULL,   -- frozen at recording time
-  agent_type               VARCHAR(12)  NOT NULL,      -- frozen
-  reported_price           BIGINT       NULL,          -- from the store, if available (reports only)
-  reported_currency        CHAR(3)      NULL,
-  base_price               BIGINT       NOT NULL,      -- IDR, plan_versions.store_base_price (gross)
-  commission_bps           INT          NOT NULL,      -- 0 for employees
-  commission_amount        BIGINT       NOT NULL,
-  earns                    TINYINT(1)   NOT NULL,      -- currency is in the earning list
-  purchased_at             DATETIME(3)  NOT NULL,
-  hold_hours               INT          NOT NULL,      -- agent override or store default, frozen
-  commission_release_at    DATETIME(3)  NOT NULL,      -- purchased_at + hold_hours
-  status                   VARCHAR(16)  NOT NULL,      -- recorded, released, refunded
-  refunded_at              DATETIME(3)  NULL,
-  created_at               DATETIME(3)  NOT NULL,
-  UNIQUE KEY uq_store_tx (store, store_transaction_id),
-  KEY idx_seller_time (seller_id, purchased_at)
-);
-```
-
-Market settings added: `store_hold_hours_google = 72`, `store_hold_hours_apple = 336`, `earning_currencies = ["IDR"]`. Catalog columns added on `plan_versions`: `store_base_price` (IDR) and `store_commission_bps`.
+- **`sellers`:**
+  - `agent_type` (partner, employee), with `store_commission_bps = 0` for employees;
+  - `agent_code` (unique) and `agent_alias` (unique, after approval through `seller_revisions`);
+  - `store_hold_hours_google` and `store_hold_hours_apple` (wallet overrides);
+  - `listed_in_directory`.
+- **`plans`:** `store_base_price` (IDR) and `store_commission_bps` per VIP item.
+- **`settings`:** `store_hold_hours` (google 72, apple 336), `earning_currencies` (`["IDR"]`).
+- **`orders` with `channel = store`:**
+  - `store`, `store_transaction_id` (unique together), `original_transaction_id`, `nahj_order_id`;
+  - `agent_code`, `reported_price`, `reported_currency`, `earns`, `store_hold_hours`;
+  - payment status `paid` and fulfillment `completed` when recorded.
+- **`units`:** one unit per store order. Its commission is `store_base_price × rate`, and `commission_release_at = purchase time + store_hold_hours`.
 
 When the store does not report a currency (possible on Google), the sale counts as earning; the currency rule applies only when a currency is known.
 
@@ -555,9 +543,9 @@ When the store does not report a currency (possible on Google), the sale counts 
 
 | Journal | Debit | Credit | Source |
 | --- | --- | --- | --- |
-| `store_commission_accrued` | commission_expense | seller pending | store sale |
-| `store_commission_matured` | seller pending | seller available | store sale, at `commission_release_at` |
-| `store_commission_reversed` | seller pending or available | commission_expense | store refund |
+| `store_commission_accrued` | commission_expense | seller pending | unit of the store order |
+| `store_commission_matured` | seller pending | seller available | unit, at `commission_release_at` |
+| `store_commission_reversed` | seller pending or available | commission_expense | refund (kind store) |
 
 Store revenue itself is not in the marketplace ledger. Google and Apple pay Nahj directly, and Finance books that from the store reports. Zero-amount journals are skipped.
 
@@ -589,10 +577,10 @@ The outbox row is written in the **same transaction** as the order completion or
 
 | Step | Row |
 | --- | --- |
-| Agent shares `AGT-7K2M3P` | `agent_codes` (active) |
+| Agent shares `AGT-7K2M3P` | `sellers.agent_code` |
 | User enters it | `users_attributes.agent_code = AGT-7K2M3P` |
 | User buys Monthly in Google Play for Rp75,000 | `nahj.orders` row with `agent_code`, VIP period; `marketplace_outbox` store_sale |
-| Event arrives | `store_sales`: base price Rp75,000 (from the catalog), store rate 10%, commission Rp7,500, release in 72 h; journal `store_commission_accrued` |
+| Event arrives | `orders` (channel store) + 1 `units` row: base price Rp75,000 (from the catalog), store rate 10%, commission Rp7,500, release in 72 h; journal `store_commission_accrued` |
 | 72 hours later, no refund | `store_commission_matured` → Available |
 | (If refunded inside 48 h) | `nahj` removes unused days; store_refund event; `store_commission_reversed`; the sale is marked refunded |
 

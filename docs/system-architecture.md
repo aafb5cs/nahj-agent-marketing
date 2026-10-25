@@ -106,7 +106,7 @@ The same codebase started in worker mode. It runs:
 - The outbox dispatcher (provider calls, emails, push hints, calls to `nahj_backend`, Keycloak admin calls).
 - The scheduled jobs in section 9.
 
-Jobs and outbox rows live in MySQL and are claimed with `SELECT … FOR UPDATE SKIP LOCKED`, so several worker instances can run safely. Each run is recorded in `job_runs`. No message broker in V1.
+Jobs and outbox rows live in MySQL and are claimed with `SELECT … FOR UPDATE SKIP LOCKED`, so several worker instances can run safely. Each run is recorded in logs. No message broker in V1.
 
 ### 4.4 Database
 
@@ -176,57 +176,55 @@ agent_marketing/
 
 ## 6. Data design
 
-### 6.1 Main tables by module
+### 6.1 Tables by module
+
+**31 tables** in `nahj_market`, optimized on 2026-10-25 from a first draft of 73. `database-tables.html` lists every column and is the source of truth.
 
 | Module | Tables |
 | --- | --- |
-| identity | `sessions`, `staff`, `staff_capabilities`, `staff_invitations`, `security_events`, `rate_limits`, `operations` (idempotency key → outcome) |
-| catalog | `config_versions`, `plans`, `plan_prices`, `commission_rates`, `seller_rate_overrides`, `referral_rules`, `market_settings` |
-| content | `policy_versions`, `policy_acceptances`, `help_articles` |
-| seller | `agent_codes`, `seller_applications`, `application_revisions`, `application_evidence`, `sellers`, `seller_onboarding`, `seller_profiles`, `seller_profile_revisions`, `reserved_names` |
-| risk | `risk_cases`, `holds` |
-| approval | `approval_requests` |
-| sales | `customers`, `store_sales`, `sale_requests`, `sale_request_events`, `sale_quotes`, `orders` |
-| payment | `payment_providers`, `payment_routes`, `payment_attempts`, `provider_events`, `payment_cases` |
-| fulfillment | `purchased_units`, `activation_credentials`, `deliveries`, `share_events`, `redemptions` |
-| entitlement | `entitlement_grants` (local record of calls to `nahj_backend`) |
-| ledger | `ledger_accounts`, `journals`, `postings`, `commissions` |
-| wallet | `payout_providers`, `payout_routes`, `payout_destinations`, `withdrawal_fee_quotes`, `withdrawals`, `payouts` (one row per transfer: seller withdrawal or refund payout) |
-| refund | `refunds`, `refund_units`, `disputes`, `dispute_evidence` |
-| referral | `referral_links`, `referral_periods`, `referral_awards` |
-| support | `cases`, `case_messages`, `case_attachments` |
-| notify | `notifications`, `notification_preferences` |
-| reporting | `seller_daily_sales`, `seller_customer_refs`, `exports` |
-| audit | `audit_events` |
-| ops | `outbox`, `jobs`, `job_runs`, `incidents` |
+| identity | `staff` (capabilities as JSON), `sessions`, `operations` (idempotency key → outcome), `rate_limits` |
+| catalog | `plans` (versioned rows), `settings` (versioned JSON values: market rules, referral rule, payment and payout routes, providers) |
+| content | `policies` |
+| seller | `sellers` (profile, application status, onboarding, agent code, personal rates, wallet holds), `seller_revisions` (anything under review) |
+| risk, approval | `holds`, `approvals` |
+| sales | `customers`, `sale_requests` (with the current quote), `orders` (web and store channels) |
+| payment | `payment_attempts`, `provider_events` |
+| fulfillment, entitlement | `units` (per unit: price, commission release, VIP grant, refund link), `codes` |
+| ledger | `journals`, `postings` (fixed account codes) |
+| wallet | `payout_destinations`, `withdrawals` (fee quote and payout transfer) |
+| refund | `refunds` (units, surplus, chargeback and store refunds; provider or payout) |
+| referral | `referral_periods`, `referral_awards` |
+| support | `cases` (support and Finance work items), `case_messages` |
+| notify, audit, ops | `notifications`, `audit_events`, `jobs` (outbox and scheduler in one), `files` |
+
+Deferred until after launch: async exports, staff invitations, notification preferences, dashboard summary tables, help-center tables.
 
 Main column decisions:
 
-- `orders.replaces_order_id` links a replacement order to the order it replaces.
-- `sale_requests.claimed_by_account_id` and `claimed_at` record the single claim.
-- `holds(scope, subject_type, subject_id, risk_case_id, placed_by, reason, released_at)` with scope one of `new_sales`, `directory`, `commission_release`, `withdrawal`, `unit`, `payment`.
-- `approval_requests(type, subject_type, subject_id, payload, payload_version, initiator, approver, status, reason)`.
-- `sellers.onboarding_status`; portal access requires `active`.
-- `purchased_units.reversible_amount` and `reversible_commission` for overlap-safe reversals.
-- `notifications.read_at` and `category`.
-- `payout_destinations.verification_status`, `provider_ref`, `name_match`, `is_default`.
+- `orders.channel` (web, store); `orders.replaces_order_id`; `sale_requests.claimed_by_account_id` and `claimed_at` record the single claim.
+- `holds(scope, subject_type, subject_id, …, active_flag)` with scope one of `new_sales`, `directory`, `commission_release`, `withdrawal`, `unit`, `payment`, plus owner, review date and notes.
+- `approvals(type, subject, payload, payload_version, initiator, approver, status)`.
+- `sellers.operating_status`; portal access requires `active`.
+- `units.reversible_amount` for overlap-safe reversals; `units.commission_status` and `commission_release_at` for maturity.
+- `notifications.read_at`; `payout_destinations.verification_status`, `provider_ref`, `name_match`, `is_default`.
 
 ### 6.2 Constraints that enforce the business rules
 
 | Rule | Enforced by |
 | --- | --- |
-| One sale request is claimed by at most one buyer | Single claim columns set under a row lock |
-| One active order per sale request; replacements are explicit | Unique key on `(orders.sale_request_id, active_flag)` where only the active order carries the flag; `replaces_order_id` set on the new order |
+| One sale request is claimed by at most one buyer | Single claim columns on `sale_requests`, set under a row lock |
+| One active order per sale request; replacements are explicit | Unique key on `(orders.sale_request_id, active_flag)`; `replaces_order_id` on the new order |
 | One winning payment per order | Unique key on `orders.winning_attempt_id`, set inside a locked transaction |
-| One provider transaction is processed once | Unique key on `(provider, provider_transaction_id)` and on `provider_events.event_id` |
-| Exactly the ordered number of units | Unique key on `(order_id, unit_index)` |
-| At most one live code per unused unit | Unique key on `(unit_id, live_flag)` where only live rows carry the flag |
-| One grant per source | Unique `client_order_id` on `nahj_backend.orders` (the unit or source ID), and a unique source key in `entitlement_grants` |
-| A command runs once | Unique key on `operations.idempotency_key` |
-| Ledger entries are created once per business event | Unique key on `(journal_type, source_id)` |
-| The same loss is never reversed twice | `purchased_units.reversible_amount` locked and reduced in the reversal transaction |
-| Approver is not the initiator | Check in the approval command and a database check constraint |
-| Display names are unique | Unique key on the normalized display name; reserved-name list |
+| One provider transaction is processed once | Unique keys on `payment_attempts (provider, provider_transaction_id)` and `provider_events (provider, event_id)` |
+| One store purchase is credited once | Unique key on `orders (store, store_transaction_id)` |
+| Exactly the ordered number of units | Unique key on `units (order_id, unit_index)` |
+| At most one live code per unused unit | Unique key on `codes (unit_id, live_flag)` |
+| One grant per unit | Unique `units.grant_client_order_id`, and unique `client_order_id` in `nahj.orders` |
+| A command runs once | Primary key on `operations.idempotency_key` |
+| Ledger entries are created once per business event | Unique key on `journals (journal_type, source_type, source_id)` |
+| The same loss is never reversed twice | `units.reversible_amount` locked and reduced in the reversal transaction |
+| Approver is not the initiator | Check in the approval command and a check constraint on `approvals` |
+| Display names and agent codes are unique | Unique keys on `sellers.display_name_norm`, `agent_code`, `agent_alias` |
 | Stale edits are rejected | `version` column checked on update |
 
 ### 6.3 Conventions
@@ -279,7 +277,7 @@ Rules:
 
 ### 6.6 Exports
 
-- Requested exports are rows in `exports` (requester, scope, filters, status Preparing / Ready / Expired / Failed, file key, expiry).
+- Requested exports are rows in exports (deferred) (requester, scope, filters, status Preparing / Ready / Expired / Failed, file key, expiry).
 - A job generates the CSV, with formula neutralization, into the private bucket. The download re-checks authorization.
 - Files expire after a configured period (default 24 hours) and are purged by a job.
 - A code export is a fulfillment action: it publishes the exported codes to the buyer portal (D08) and is audited per code.
@@ -292,29 +290,22 @@ A bulk buyer is not a separate kind of user. It is any customer whose order has 
 erDiagram
     customers ||--o{ orders : places
     sellers ||--o{ orders : "attributed to"
-    sale_requests ||--o| orders : "claimed as"
-    sale_quotes ||--o{ orders : "snapshot of"
-    orders ||--o{ purchased_units : "has 1..quantity"
+    sale_requests ||--o{ orders : "claimed as (one active)"
+    plans ||--o{ orders : "snapshot of"
     orders ||--o{ payment_attempts : "paid by"
-    purchased_units ||--o{ activation_credentials : "code, replacement chain"
-    activation_credentials ||--o| redemptions : "used by"
-    purchased_units ||--o| entitlement_grants : "VIP time"
-    orders ||--o{ deliveries : "published via"
+    orders ||--|{ units : "1 per quantity"
+    units ||--o{ codes : "code + replacements"
     orders ||--o{ refunds : ""
-    refunds ||--o{ refund_units : "selects"
-    purchased_units ||--o{ refund_units : ""
+    refunds ||--o{ units : "refund_id"
 ```
 
-| Table | Key columns | Notes |
-| --- | --- | --- |
-| `customers` | `account_id` (Keycloak `sub`, PK), `display_name`, `email_masked`, `status`, `risk_flag`, `first_order_at`, `last_order_at` | Marketplace-side profile, created on first sign-in. Not an identity store: Keycloak and `nahj_backend` stay the source. |
-| `orders` | `id`, `reference`, `buyer_account_id`, `seller_id`, `sale_request_id`, `quote_id`, `plan_version_id`, `item_id`, `duration_days`, `is_lifetime`, `quantity`, `unit_price`, `total`, `currency`, `fulfillment_mode` (`direct`, `codes`), `payment_status`, `fulfillment_status`, `refund_status`, `payment_confirmed_at`, `fulfillment_due_at`, `refund_window_hours`, `unused_refund_days`, `accepted_policy_versions`, `replaces_order_id`, `version` | `fulfillment_mode = direct` requires `quantity = 1`. |
-| `purchased_units` | `id`, `order_id`, `unit_index`, `unit_price`, `commission_amount`, `referral_amount`, `reversible_amount`, `status` (`awaiting_fulfillment`, `issued`, `redeemed`, `activated`, `reserved`, `refunded`, `voided`), `activated_account_id`, `activated_at`, `refund_deadline_at` | Unique `(order_id, unit_index)`. `refund_deadline_at` is payment + unused-code period while unused, and activation + 48 h once used. |
-| `activation_credentials` | `id`, `unit_id`, `code_hash`, `code_encrypted`, `status` (`live`, `consumed`, `voided`), `replaces_credential_id`, `published_at`, `revealed_count` | At most one `live` credential per unit. |
-| `redemptions` | `id`, `credential_id`, `account_id`, `operation_key`, `result`, `created_at` | Unique per credential. A same-account retry returns the stored result. |
-| `entitlement_grants` | `unit_id`, `account_id`, `client_order_id`, `status`, `vip_start`, `vip_end`, `refunded_days` | Local mirror of the order created in `nahj_backend`. |
-| `deliveries` | `id`, `order_id`, `unit_ids`, `channel` (`portal`, `email`, `copy`, `share`, `export`), `actor`, `status`, `created_at` | Portal publication is the delivery; email is a separate status. |
-| `refunds`, `refund_units` | refund amount, reason, status, provider command; selected units and the amount per unit | A bulk refund selects only units that are still refundable. |
+| Table | What it holds for a bulk order |
+| --- | --- |
+| `customers` | The buyer (parent, school or company), keyed by the Keycloak account ID. Created on first sign-in. |
+| `orders` | One row: buyer, seller, plan snapshot, quantity, unit price, total, `fulfillment_mode = codes`, and separate payment, fulfillment and refund statuses. `direct` requires quantity 1. |
+| `units` | One row per paid unit: its price, commission and release state, status (`issued`, `activated`, `reserved`, `refunded`, `voided`), refund deadline (30 days after payment while unused, 48 h after activation), the VIP grant once redeemed, and `refund_id` if refunded. |
+| `codes` | One live code per unit, stored as a keyed hash and encrypted, with `published_at` (visible in My Purchases), who redeemed it and when, and the replacement chain. |
+| `refunds` | A refund of selected units. Each refunded unit points to it through `units.refund_id`, and the original unit price and commission are reversed. |
 
 **Bulk refund rule (confirmed 2026-10-21):** a bulk buyer can refund the units whose codes were never redeemed. Redeemed units follow the 48-hour rule from their own activation. Example: 10 codes, 4 redeemed more than 48 hours ago, 6 unused → the 6 can be refunded, at their original unit price and commission (T12).
 
@@ -359,12 +350,11 @@ Rules every adapter follows:
 
 #### Configuration (data, not code)
 
-| Table | Purpose |
+| Setting | Purpose |
 | --- | --- |
-| `payment_providers` | Code, display name, enabled, environment (sandbox or production), credentials reference in the secret store (never the secret itself), webhook secret reference. |
-| `payment_routes` | Which provider handles which method: `method`, `provider`, `priority`, `enabled`, `min_amount`, `max_amount`, `fee_fixed`, `fee_percent`, `vat_included`. Versioned like the rest of the catalog. |
-| `payout_providers` | Same as `payment_providers`, for money out. |
-| `payout_routes` | Destination type (bank, e-wallet) → provider, priority, fee, limits. |
+| `settings` key `providers` | Per provider: code, display name, enabled, environment (sandbox or production), credentials reference in the secret store (never the secret itself), webhook secret reference. |
+| `settings` key `payment_routes` | Which provider handles which method: `method`, `provider`, `priority`, `enabled`, `min_amount`, `max_amount`, `fee_fixed`, `fee_percent`, `vat_included`. Versioned like the rest of the catalog. |
+| `settings` key `payout_routes` | Destination type (bank, e-wallet) → provider, priority, fee, limits. |
 
 Example route set for launch:
 
@@ -431,7 +421,7 @@ sequenceDiagram
     U->>G: complete order (existing flow)
     G->>G: verify receipt, add VIP time, copy agent_code onto the order
     G->>M: store sale event (outbox, retried)
-    M->>M: store_sales row, IDR base price × agent rate, commission to agent Pending
+    M->>M: store order + 1 unit, IDR base price × agent rate, commission to agent Pending
     Note over M: released after the agent's hold (default Google 3 days, Apple 14 days)
     S-->>G: refund notification (later, if any)
     G->>G: remove unused VIP days
@@ -499,7 +489,7 @@ Keycloak answers "who is this". The marketplace database answers "what may they 
 - A staff member is an account with a `staff` row and a set of capabilities, each scoped to a market. Staff are added by invitation; the last active Super Admin cannot be disabled.
 - Capabilities and seller status are read on every request, so disabling staff or suspending a seller takes effect immediately in this system.
 - Each API route declares the capability it needs. Each query is also filtered by relationship: a seller sees only orders attributed to them, a customer only their own.
-- Actions needing independent approval go through `approval_requests`, which rejects approval by the initiator.
+- Actions needing independent approval go through `approvals`, which rejects approval by the initiator.
 
 ### 7.3 MFA
 
@@ -510,7 +500,7 @@ Keycloak answers "who is this". The marketplace database answers "what may they 
 ### 7.4 Sessions and security events
 
 - Disabling staff, suspending a seller or the user choosing "sign out other devices" deletes local sessions and calls the Keycloak admin API to log out the user's Keycloak sessions.
-- Keycloak user events are enabled for password reset, credential update and TOTP changes. The worker polls the Keycloak admin events API and stores them in `security_events`. Configured events place a time-limited `withdrawal` hold.
+- Keycloak user events are enabled for password reset, credential update and TOTP changes. The worker polls the Keycloak admin events API and stores them in `audit_events`. Configured events place a time-limited `withdrawal` hold.
 - A payout destination change notifies the previous verified email and places the same hold.
 - Account, seller and staff screens list security events and active sessions from these sources.
 
@@ -629,7 +619,7 @@ Fulfillment is **instant at payment** (decision 17, 2026-10-23). The 30-minute s
 
 ### 10.6 Sale request and order
 
-1. The seller creates a sale request; each change is a `sale_request_events` row.
+1. The seller creates a sale request; each change is a `audit_events` row.
 2. The buyer opens the link, signs in and receives a quote with a validity time.
 3. On confirmation the request is claimed and the order is created with the quote snapshot. A double click returns the same order.
 4. If the economics must change after a payment attempt exists, a replacement order is created with `replaces_order_id`, after the buyer sees the pending-payment warning. A late success on the old order is still accepted under its own snapshot.
@@ -649,7 +639,7 @@ Fulfillment is **instant at payment** (decision 17, 2026-10-23). The 30-minute s
 - **Deployment**: one Docker image for the backend, run as two services (API and worker). The web build is static files served from the same host. Database migrations run as a separate step before a new version starts.
 - **Environments**: local (fake payment and payout providers, local Keycloak), staging (provider sandboxes), production.
 - **Testing**: integration tests run each use case against a real MySQL instance with fake providers and a controllable clock. The 25 acceptance cases in the developer reference become automated tests.
-- **Observability**: structured JSON logs with a request ID and operation key; `job_runs` and `incidents` for the operations screen; metrics for unresolved payments, overdue fulfillments, outbox age and failed jobs; alerts on each recovery queue.
+- **Observability**: structured JSON logs with a request ID and operation key; logs and `cases` for the operations screen; metrics for unresolved payments, overdue fulfillments, outbox age and failed jobs; alerts on each recovery queue.
 
 ## 13. Decisions
 

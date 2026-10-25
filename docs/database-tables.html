@@ -108,8 +108,8 @@ footer { color: var(--muted); font-size: 0.85rem; }
 <div class="wrap">
   <header>
     <span class="eyebrow">Nahj Seller Marketplace · database design for review · 25 Oct 2026</span>
-    <h1>Every new table, and every change to the game database</h1>
-    <p class="lede">The marketplace gets its own schema <code>nahj_market</code> on the same Cloud SQL server. The game schema <code>nahj</code> only gets new columns on <code>orders</code>, one outbox table and new account attribute keys. Each card lists the columns, types and keys; "Show SQL" gives a draft <code>CREATE TABLE</code>.</p>
+    <h1>31 tables for the marketplace, and the changes to the game database</h1>
+    <p class="lede">The marketplace gets its own schema <code>nahj_market</code> on the same Cloud SQL server. The game schema <code>nahj</code> only gets new columns on <code>orders</code>, one outbox table and new account attribute keys. Each card lists the columns, types and keys; "Show SQL" gives a draft <code>CREATE TABLE</code>. Optimized on 25 Oct 2026 from a first draft of 73 tables: concepts that were separate tables are now columns, JSON values or rows in shared tables.</p>
   </header>
 
   <section class="summary" id="summary" aria-label="Totals"></section>
@@ -124,6 +124,35 @@ footer { color: var(--muted); font-size: 0.85rem; }
       <li><code>FK</code> marks a reference to another table. The draft SQL leaves foreign-key constraints out; migrations decide which ones to enforce.</li>
       <li>The marketplace never connects to <code>nahj</code>; the game backend never connects to <code>nahj_market</code>. They talk through internal APIs.</li>
     </ul>
+  </section>
+
+
+  <section class="rules" aria-labelledby="merged-title">
+    <span class="eyebrow" id="merged-title">What was merged or deferred (73 → 31)</span>
+    <div class="colbox" style="border:0; margin-top:8px">
+      <table>
+        <thead><tr><th>First draft</th><th>Now</th></tr></thead>
+        <tbody>
+          <tr><td>staff_capabilities, staff_invitations, security_events</td><td><code>staff.capabilities</code> JSON; staff added by Super Admin; security events in <code>audit_events</code></td></tr>
+          <tr><td>config_versions, plan_versions, market_settings, referral_rules, payment/payout providers and routes, reserved_names</td><td><code>plans</code> (versioned rows) and <code>settings</code> (versioned JSON values)</td></tr>
+          <tr><td>policy_versions, policy_acceptances, help_articles</td><td><code>policies</code>; acceptance on <code>orders.accepted_policies</code> and <code>sellers.terms_policy_id</code>; help as static pages</td></tr>
+          <tr><td>seller_applications, application_revisions, application_evidence, seller_onboarding, seller_profiles, seller_profile_revisions, seller_rate_overrides, agent_codes</td><td><code>sellers</code> (one row per seller with profile, onboarding, rates, agent code) and <code>seller_revisions</code> (anything under review); files in <code>files</code></td></tr>
+          <tr><td>risk_cases, approval_requests</td><td><code>holds</code> (with owner and review date) and <code>approvals</code></td></tr>
+          <tr><td>sale_quotes, sale_request_events</td><td>quote columns on <code>sale_requests</code>; timeline in <code>audit_events</code></td></tr>
+          <tr><td>store_sales</td><td><code>orders</code> with <code>channel = store</code> and one unit: one commission and refund path for both channels</td></tr>
+          <tr><td>payment_cases</td><td><code>cases</code> with a payment kind</td></tr>
+          <tr><td>purchased_units, entitlement_grants, commissions</td><td><code>units</code> (grant and commission-release columns)</td></tr>
+          <tr><td>activation_credentials, redemptions, deliveries</td><td><code>codes</code> (redeemed and published columns); email status in <code>notifications</code></td></tr>
+          <tr><td>ledger_accounts</td><td>fixed account codes on <code>postings</code>; balances are sums</td></tr>
+          <tr><td>withdrawal_fee_quotes, payouts</td><td>fee and payout columns on <code>withdrawals</code> and <code>refunds</code></td></tr>
+          <tr><td>refund_units, disputes, dispute_evidence</td><td><code>units.refund_id</code>; chargebacks are a refund kind; evidence in <code>files</code></td></tr>
+          <tr><td>referral_changes</td><td><code>audit_events</code></td></tr>
+          <tr><td>case_attachments</td><td><code>files</code></td></tr>
+          <tr><td>outbox, jobs, job_runs, incidents</td><td>one <code>jobs</code> table; run history in logs and monitoring; incidents as <code>cases</code></td></tr>
+          <tr><td>exports, notification_preferences, seller_daily_sales, seller_customer_refs</td><td>deferred: direct CSV download, essential notices only, dashboard and customer lists queried from <code>orders</code></td></tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 
   <section class="controls" aria-label="Filter tables">
@@ -146,249 +175,161 @@ const T = (db, module, name, status, desc, cols, keys) => ({ db, module, name, s
 const M = "nahj_market", G = "nahj";
 
 const TABLES = [
-// ---------------- identity ----------------
-T(M,"Identity and access","staff","new","Nahj staff members. Identity is the Keycloak account; capabilities live here.",[
- "id|BIGINT UNSIGNED|PK AI|","account_id|VARCHAR(64)|UQ|Keycloak sub","display_name|VARCHAR(128)||","email_masked|VARCHAR(128)||e.g. a***@ryam.app",
- "status|VARCHAR(12)||active, disabled","last_active_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||","disabled_at|DATETIME(3)|NULL|","version|INT|DEF=1|"]),
-T(M,"Identity and access","staff_capabilities","new","What each staff member may do, per market.",[
- "staff_id|BIGINT UNSIGNED|PK FK=staff|","capability|VARCHAR(48)|PK|e.g. finance.refund.approve","market|CHAR(2)|PK|ID","granted_by|BIGINT UNSIGNED||staff id","granted_at|DATETIME(3)||"]),
-T(M,"Identity and access","staff_invitations","new","Invitations for new staff; no public registration.",[
- "id|BIGINT UNSIGNED|PK AI|","email_masked|VARCHAR(128)||","email_hash|BINARY(32)||HMAC of the email","capabilities|JSON||offered capabilities","token_hash|BINARY(32)|UQ|","invited_by|BIGINT UNSIGNED||",
- "status|VARCHAR(12)||pending, accepted, expired, revoked","accepted_account_id|VARCHAR(64)|NULL|","expires_at|DATETIME(3)||","created_at|DATETIME(3)||"]),
-T(M,"Identity and access","sessions","new","Web sessions after Keycloak sign-in. Only a hash of the cookie value is stored.",[
- "id_hash|BINARY(32)|PK|SHA-256 of the session cookie","account_id|VARCHAR(64)||","csrf_hash|BINARY(32)||","auth_time|DATETIME(3)||last Keycloak authentication, for step-up",
+// ---------------- access ----------------
+T(M,"Access","staff","new","Nahj staff. Identity is the Keycloak account; capabilities are a JSON list here.",[
+ "id|BIGINT UNSIGNED|PK AI|","account_id|VARCHAR(64)|UQ|Keycloak sub","display_name|VARCHAR(128)||","email_masked|VARCHAR(128)||",
+ "capabilities|JSON||[{\"cap\":\"finance.refund.approve\",\"market\":\"ID\"}]","status|VARCHAR(12)||active, disabled","last_active_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||","disabled_at|DATETIME(3)|NULL|","version|INT|DEF=1|"]),
+T(M,"Access","sessions","new","Web sessions after Keycloak sign-in. Only a hash of the cookie is stored.",[
+ "id_hash|BINARY(32)|PK|SHA-256 of the cookie value","account_id|VARCHAR(64)||","csrf_hash|BINARY(32)||","auth_time|DATETIME(3)||last Keycloak login, for step-up",
  "created_at|DATETIME(3)||","last_seen_at|DATETIME(3)||","expires_at|DATETIME(3)||","ip|VARCHAR(45)||","user_agent|VARCHAR(255)||","revoked_at|DATETIME(3)|NULL|"],["KEY (account_id, revoked_at)"]),
-T(M,"Identity and access","security_events","new","Sign-in and credential events imported from Keycloak, plus marketplace security events.",[
- "id|BIGINT UNSIGNED|PK AI|","account_id|VARCHAR(64)||","source|VARCHAR(12)||keycloak, marketplace","keycloak_event_id|VARCHAR(64)|UQ NULL|dedup of imported events",
- "event_type|VARCHAR(32)||UPDATE_PASSWORD, UPDATE_TOTP, payout_destination_changed…","occurred_at|DATETIME(3)||","ip|VARCHAR(45)|NULL|","details|JSON|NULL|redacted"],["KEY (account_id, occurred_at)"]),
-T(M,"Identity and access","rate_limits","new","Fixed-window counters for redeem, sign-in challenges, resend cooldowns and code checks.",[
- "bucket_key|VARCHAR(160)|PK|e.g. redeem:acct:{id}","window_start|DATETIME(3)|PK|","hits|INT||"]),
-T(M,"Identity and access","operations","new","Idempotency: one row per mutating request key, with its stored outcome.",[
- "idempotency_key|VARCHAR(64)|PK|from the Idempotency-Key header","actor|VARCHAR(80)||account, staff or service","command|VARCHAR(64)||","request_hash|BINARY(32)||same key with a different body is rejected",
+T(M,"Access","operations","new","Idempotency: each mutating request key and its stored outcome.",[
+ "idempotency_key|VARCHAR(64)|PK|Idempotency-Key header","actor|VARCHAR(80)||","command|VARCHAR(64)||","request_hash|BINARY(32)||same key, different body → rejected",
  "status|VARCHAR(12)||running, done, failed","http_status|INT|NULL|","response|JSON|NULL|","created_at|DATETIME(3)||","completed_at|DATETIME(3)|NULL|"]),
+T(M,"Access","rate_limits","new","Fixed-window counters: redeem, code checks, sign-in challenges, resend cooldowns.",[
+ "bucket_key|VARCHAR(160)|PK|e.g. redeem:acct:{id}","window_start|DATETIME(3)|PK|","hits|INT||"]),
 
-// ---------------- catalog ----------------
-T(M,"Catalog and settings","config_versions","new","Every configuration change is a version: draft, scheduled, published, retired.",[
- "id|BIGINT UNSIGNED|PK AI|","kind|VARCHAR(24)||plans, commission, referral, market, routes","version|INT||","status|VARCHAR(12)||draft, scheduled, published, retired",
- "effective_from|DATETIME(3)|NULL|","owner_staff_id|BIGINT UNSIGNED||","reason|VARCHAR(255)||","approval_request_id|BIGINT UNSIGNED|NULL FK=approval_requests|","created_at|DATETIME(3)||"],["UNIQUE (kind, version)"]),
-T(M,"Catalog and settings","plan_versions","new","What is sold. Each plan points to a nahj_backend VIP item and copies its days when published.",[
- "id|BIGINT UNSIGNED|PK AI|","config_version_id|BIGINT UNSIGNED|FK=config_versions|","plan_code|VARCHAR(32)||weekly, monthly, 6month, yearly, lifetime",
+// ---------------- config ----------------
+T(M,"Catalog and settings","plans","new","What is sold, versioned. Each row points to a nahj VIP item. A published row is never edited.",[
+ "id|BIGINT UNSIGNED|PK AI|","plan_code|VARCHAR(32)||weekly, monthly, 6month, yearly, lifetime","version|INT||","status|VARCHAR(12)||draft, scheduled, published, retired","effective_from|DATETIME(3)|NULL|",
  "item_id|VARCHAR(64)||nahj item, e.g. vip_pass_monthly","duration_days|INT||copied from the item","is_lifetime|TINYINT(1)|DEF=0|",
- "unit_price|BIGINT||web price, IDR","commission_bps|INT||default seller rate for web sales",
- "store_base_price|BIGINT||IDR base for app-store commission (gross)","store_commission_bps|INT||default agent rate for app-store sales",
- "refund_window_hours|INT|DEF=48|after activation","unused_refund_days|INT|DEF=30|unused codes, after payment","max_quantity|INT||","web_enabled|TINYINT(1)|DEF=1|","display_order|INT|DEF=0|"],["UNIQUE (config_version_id, plan_code)"]),
-T(M,"Catalog and settings","seller_rate_overrides","new","Personal commission rates per seller, optionally per plan.",[
- "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","plan_code|VARCHAR(32)|NULL|NULL = all plans","commission_bps|INT|NULL|web","store_commission_bps|INT|NULL|app store",
- "effective_from|DATETIME(3)||","effective_to|DATETIME(3)|NULL|","reason|VARCHAR(255)||","created_by|BIGINT UNSIGNED||"]),
-T(M,"Catalog and settings","referral_rules","new","Monthly referral target and reward rate.",[
- "id|BIGINT UNSIGNED|PK AI|","config_version_id|BIGINT UNSIGNED|FK=config_versions|","target_amount|BIGINT||net qualified sales per month, IDR","reward_bps|INT||","effective_from|DATETIME(3)||"]),
-T(M,"Catalog and settings","market_settings","new","Key/value settings per market, versioned.",[
- "market|CHAR(2)|PK|ID","setting_key|VARCHAR(64)|PK|e.g. withdrawal_min, store_hold_hours_google","config_version_id|BIGINT UNSIGNED|PK FK=config_versions|","value|JSON||"],
- ["Keys: withdrawal_min = 500000 · store_hold_hours_google = 72 · store_hold_hours_apple = 336 · earning_currencies = [\"IDR\"] · quote_validity_minutes · request_validity_hours · attempt_expiry_minutes · retention settings"]),
+ "unit_price|BIGINT||web price, IDR","commission_bps|INT||default web rate","store_base_price|BIGINT||IDR base for app-store commission","store_commission_bps|INT||default app-store rate",
+ "refund_window_hours|INT|DEF=48|after activation","unused_refund_days|INT|DEF=30|unused codes, after payment","max_quantity|INT||","web_enabled|TINYINT(1)|DEF=1|","display_order|INT|DEF=0|",
+ "created_by|BIGINT UNSIGNED||staff id","approval_id|BIGINT UNSIGNED|NULL FK=approvals|","created_at|DATETIME(3)||"],["UNIQUE (plan_code, version)"]),
+T(M,"Catalog and settings","settings","new","Every other setting as a versioned JSON value: market rules, referral rule, payment and payout routes, providers.",[
+ "setting_key|VARCHAR(64)|PK|","version|INT|PK|","status|VARCHAR(12)||draft, scheduled, published, retired","effective_from|DATETIME(3)|NULL|","value|JSON||",
+ "created_by|BIGINT UNSIGNED||","approval_id|BIGINT UNSIGNED|NULL FK=approvals|","created_at|DATETIME(3)||"],
+ ["Keys: withdrawal_min · store_hold_hours (google 72, apple 336) · earning_currencies [\"IDR\"] · referral_rule {target, reward_bps} · payment_routes [{method, provider, priority, limits, fee}] · payout_routes · providers {code, enabled, env, credentials_ref} · validity times · reserved_names · retention"]),
 
-// ---------------- content ----------------
-T(M,"Policies and help","policy_versions","new","Terms, privacy, refund policy and seller terms, by version and language.",[
+// ---------------- policies ----------------
+T(M,"Policies","policies","new","Terms, privacy, refund policy and seller terms by version and language. Acceptance is stored where it happens (order, seller).",[
  "id|BIGINT UNSIGNED|PK AI|","policy_type|VARCHAR(24)||terms, privacy, refund, seller_terms","version|VARCHAR(16)||","locale|VARCHAR(5)||id, en","effective_from|DATETIME(3)||","content_md|MEDIUMTEXT||","status|VARCHAR(12)||draft, published"],
  ["UNIQUE (policy_type, version, locale)"]),
-T(M,"Policies and help","policy_acceptances","new","Who accepted which policy version, where.",[
- "id|BIGINT UNSIGNED|PK AI|","account_id|VARCHAR(64)||","policy_version_id|BIGINT UNSIGNED|FK=policy_versions|","context|VARCHAR(16)||order, seller_terms, onboarding","context_id|BIGINT UNSIGNED|NULL|","accepted_at|DATETIME(3)||","ip|VARCHAR(45)|NULL|"]),
-T(M,"Policies and help","help_articles","new","Help center content.",[
- "id|BIGINT UNSIGNED|PK AI|","slug|VARCHAR(96)|UQ|","category|VARCHAR(32)||","locale|VARCHAR(5)||","title|VARCHAR(200)||","body_md|MEDIUMTEXT||","status|VARCHAR(12)||","updated_at|DATETIME(3)||"]),
 
-// ---------------- seller ----------------
-T(M,"Sellers and agents","seller_applications","new","Applications to become a seller.",[
- "id|BIGINT UNSIGNED|PK AI|","account_id|VARCHAR(64)||","status|VARCHAR(20)||draft, pending_review, more_info, approved, rejected","display_name|VARCHAR(80)||","city|VARCHAR(64)||",
- "phone_masked|VARCHAR(32)|NULL|","referral_code_used|VARCHAR(16)|NULL|referring agent","reviewer_staff_id|BIGINT UNSIGNED|NULL|","submitted_at|DATETIME(3)|NULL|","decided_at|DATETIME(3)|NULL|","decision_reason|VARCHAR(255)|NULL|","version|INT|DEF=1|"]),
-T(M,"Sellers and agents","application_revisions","new","Snapshot of each submitted version of an application.",[
- "id|BIGINT UNSIGNED|PK AI|","application_id|BIGINT UNSIGNED|FK=seller_applications|","snapshot|JSON||","created_at|DATETIME(3)||"]),
-T(M,"Sellers and agents","application_evidence","new","Documents requested from an applicant. Files in the private bucket.",[
- "id|BIGINT UNSIGNED|PK AI|","application_id|BIGINT UNSIGNED|FK=seller_applications|","kind|VARCHAR(32)||","requested_by|BIGINT UNSIGNED||","file_key|VARCHAR(255)|NULL|R2 key","scan_status|VARCHAR(12)||pending, clean, rejected","uploaded_at|DATETIME(3)|NULL|"]),
-T(M,"Sellers and agents","sellers","new","Approved sellers and agents: status, type and wallet settings.",[
- "id|BIGINT UNSIGNED|PK AI|","account_id|VARCHAR(64)|UQ|","application_id|BIGINT UNSIGNED|NULL FK=seller_applications|NULL for employees","agent_type|VARCHAR(12)|DEF='partner'|partner, employee",
- "operating_status|VARCHAR(12)||onboarding, active, paused, suspended","listed_in_directory|TINYINT(1)|DEF=1|employees default 0","referrer_seller_id|BIGINT UNSIGNED|NULL FK=sellers|one level",
- "store_hold_hours_google|INT|NULL|wallet override; NULL = default","store_hold_hours_apple|INT|NULL|wallet override; NULL = default","created_at|DATETIME(3)||","version|INT|DEF=1|"]),
-T(M,"Sellers and agents","seller_onboarding","new","Checklist that gates the seller portal.",[
- "seller_id|BIGINT UNSIGNED|PK FK=sellers|","mfa_verified_at|DATETIME(3)|NULL|","terms_policy_version_id|BIGINT UNSIGNED|NULL FK=policy_versions|","terms_accepted_at|DATETIME(3)|NULL|","name_approved_at|DATETIME(3)|NULL|","completed_at|DATETIME(3)|NULL|"]),
-T(M,"Sellers and agents","seller_profiles","new","Live public profile (the approved version).",[
- "seller_id|BIGINT UNSIGNED|PK FK=sellers|","display_name|VARCHAR(80)||","display_name_norm|VARCHAR(80)|UQ|lowercase, no spaces or accents","city|VARCHAR(64)||","bio|VARCHAR(500)|NULL|",
- "logo_public_key|VARCHAR(255)|NULL|public bucket","contact|JSON|NULL|what the seller chose to show","approved_revision_id|BIGINT UNSIGNED|NULL|","updated_at|DATETIME(3)||"],["KEY (city)"]),
-T(M,"Sellers and agents","seller_profile_revisions","new","Proposed profile edits waiting for review.",[
- "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","data|JSON||","status|VARCHAR(12)||pending, approved, rejected","reviewer_staff_id|BIGINT UNSIGNED|NULL|","reason|VARCHAR(255)|NULL|","created_at|DATETIME(3)||","decided_at|DATETIME(3)|NULL|"]),
-T(M,"Sellers and agents","reserved_names","new","Names sellers cannot use (official-looking names).",[
- "name_norm|VARCHAR(80)|PK|","reason|VARCHAR(255)||"]),
-T(M,"Sellers and agents","agent_codes","new","Each agent's permanent code for app-store sales, plus an optional approved alias.",[
- "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","code|VARCHAR(16)|UQ|AGT-7K2M3P or alias TOKOILMU","kind|VARCHAR(10)||generated, alias",
- "status|VARCHAR(16)||active, pending_review, disabled","created_at|DATETIME(3)||","disabled_at|DATETIME(3)|NULL|"],["KEY (seller_id)"]),
+// ---------------- sellers ----------------
+T(M,"Sellers and agents","sellers","new","One row per seller or agent: application status, onboarding, profile, agent code, personal rates and wallet settings.",[
+ "id|BIGINT UNSIGNED|PK AI|","account_id|VARCHAR(64)|UQ|","agent_type|VARCHAR(12)|DEF='partner'|partner, employee",
+ "application_status|VARCHAR(16)||draft, pending_review, more_info, approved, rejected","operating_status|VARCHAR(12)||onboarding, active, paused, suspended",
+ "display_name|VARCHAR(80)||live, approved version","display_name_norm|VARCHAR(80)|UQ|lowercase, no spaces or accents","city|VARCHAR(64)||","bio|VARCHAR(500)|NULL|","logo_file_id|BIGINT UNSIGNED|NULL FK=files|public bucket","contact|JSON|NULL|","phone_masked|VARCHAR(32)|NULL|",
+ "listed_in_directory|TINYINT(1)|DEF=1|employees default 0","referrer_seller_id|BIGINT UNSIGNED|NULL FK=sellers|one level",
+ "agent_code|VARCHAR(16)|UQ NULL|AGT-7K2M3P","agent_alias|VARCHAR(16)|UQ NULL|e.g. TOKOILMU, after approval",
+ "commission_bps|INT|NULL|personal web rate; NULL = plan default","store_commission_bps|INT|NULL|personal store rate; employees 0","store_hold_hours_google|INT|NULL|wallet override","store_hold_hours_apple|INT|NULL|wallet override",
+ "mfa_verified_at|DATETIME(3)|NULL|onboarding","terms_policy_id|BIGINT UNSIGNED|NULL FK=policies|accepted seller terms","terms_accepted_at|DATETIME(3)|NULL|","onboarded_at|DATETIME(3)|NULL|",
+ "reviewer_staff_id|BIGINT UNSIGNED|NULL|","decided_at|DATETIME(3)|NULL|","decision_reason|VARCHAR(255)|NULL|","created_at|DATETIME(3)||","version|INT|DEF=1|"],["KEY (operating_status, listed_in_directory, city)"]),
+T(M,"Sellers and agents","seller_revisions","new","Anything waiting for review: the application, profile changes, an agent alias. The approved data is copied into sellers.",[
+ "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","kind|VARCHAR(12)||application, profile, alias","data|JSON||proposed values","status|VARCHAR(12)||pending, approved, rejected, more_info",
+ "reviewer_staff_id|BIGINT UNSIGNED|NULL|","reason|VARCHAR(255)|NULL|","created_at|DATETIME(3)||","decided_at|DATETIME(3)|NULL|"],["KEY (status, kind)"]),
 
-// ---------------- risk & approval ----------------
-T(M,"Risk and approvals","risk_cases","new","Investigations with an owner and a review date.",[
- "id|BIGINT UNSIGNED|PK AI|","subject_type|VARCHAR(16)||seller, customer, order, payment","subject_id|VARCHAR(64)||","owner_staff_id|BIGINT UNSIGNED||","status|VARCHAR(12)||open, closed",
- "review_due_at|DATETIME(3)||","internal_note|TEXT|NULL|staff only","seller_message|VARCHAR(500)|NULL|safe text shown to the seller","created_by|BIGINT UNSIGNED||","created_at|DATETIME(3)||","closed_at|DATETIME(3)|NULL|"]),
-T(M,"Risk and approvals","holds","new","Scoped holds. Each blocks one kind of action on one subject until released.",[
- "id|BIGINT UNSIGNED|PK AI|","risk_case_id|BIGINT UNSIGNED|NULL FK=risk_cases|","scope|VARCHAR(20)||new_sales, directory, commission_release, withdrawal, unit, payment",
- "subject_type|VARCHAR(16)||seller, unit, payment_attempt, store_sale","subject_id|VARCHAR(64)||","reason|VARCHAR(255)||","placed_by|VARCHAR(80)||staff or system",
- "placed_at|DATETIME(3)||","expires_at|DATETIME(3)|NULL|for time-limited security holds","released_by|VARCHAR(80)|NULL|","released_at|DATETIME(3)|NULL|","active_flag|TINYINT|NULL|1 while active"],["KEY (subject_type, subject_id, scope, active_flag)"]),
-T(M,"Risk and approvals","approval_requests","new","Actions that need a second person. The approver can never be the initiator.",[
+// ---------------- control ----------------
+T(M,"Control","holds","new","Scoped holds with their investigation details. Each blocks one kind of action on one subject until released.",[
+ "id|BIGINT UNSIGNED|PK AI|","scope|VARCHAR(20)||new_sales, directory, commission_release, withdrawal, unit, payment","subject_type|VARCHAR(16)||seller, unit, payment_attempt, order","subject_id|VARCHAR(64)||",
+ "reason|VARCHAR(255)||","internal_note|TEXT|NULL|staff only","seller_message|VARCHAR(500)|NULL|safe text for the seller","owner_staff_id|BIGINT UNSIGNED|NULL|","review_due_at|DATETIME(3)|NULL|",
+ "placed_by|VARCHAR(80)||staff or system","placed_at|DATETIME(3)||","expires_at|DATETIME(3)|NULL|time-limited security holds","released_by|VARCHAR(80)|NULL|","released_at|DATETIME(3)|NULL|","active_flag|TINYINT|NULL|1 while active"],
+ ["KEY (subject_type, subject_id, scope, active_flag)"]),
+T(M,"Control","approvals","new","Actions that need a second person. The approver can never be the initiator.",[
  "id|BIGINT UNSIGNED|PK AI|","type|VARCHAR(32)||manual_adjustment, large_withdrawal, admin_grant, config_publish, refund_exception","subject_type|VARCHAR(24)||","subject_id|VARCHAR(64)||",
  "payload|JSON||frozen at request","payload_version|INT||","initiator_staff_id|BIGINT UNSIGNED||","approver_staff_id|BIGINT UNSIGNED|NULL|","status|VARCHAR(12)||pending, approved, rejected, executed, expired",
  "reason|VARCHAR(255)||","created_at|DATETIME(3)||","decided_at|DATETIME(3)|NULL|","executed_at|DATETIME(3)|NULL|"],["CHECK (approver_staff_id IS NULL OR approver_staff_id <> initiator_staff_id)"]),
 
 // ---------------- sales ----------------
-T(M,"Sales","customers","new","Marketplace-side buyer profile, created on first sign-in. Not an identity store.",[
+T(M,"Sales","customers","new","Buyer profile on the marketplace side, created on first sign-in. Not an identity store.",[
  "account_id|VARCHAR(64)|PK|Keycloak sub = nahj users.id","display_name|VARCHAR(128)|NULL|","email_masked|VARCHAR(128)|NULL|","status|VARCHAR(12)|DEF='active'|","risk_flag|VARCHAR(32)|NULL|",
  "first_order_at|DATETIME(3)|NULL|","last_order_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||","anonymized_at|DATETIME(3)|NULL|after account deletion"]),
-T(M,"Sales","sale_requests","new","A seller's sale link: plan, quantity and delivery mode, claimed once by a buyer.",[
+T(M,"Sales","sale_requests","new","A seller's sale link, with its current quote. Claimed once by a buyer.",[
  "id|BIGINT UNSIGNED|PK AI|","token|CHAR(32)|UQ|opaque link token","seller_id|BIGINT UNSIGNED|FK=sellers|","plan_code|VARCHAR(32)||","quantity|INT||","fulfillment_mode|VARCHAR(8)||direct, codes",
- "status|VARCHAR(12)||draft, awaiting, claimed, expired, revoked","expires_at|DATETIME(3)||","claimed_by_account_id|VARCHAR(64)|NULL|","claimed_at|DATETIME(3)|NULL|","version|INT|DEF=1|","created_at|DATETIME(3)||"]),
-T(M,"Sales","sale_request_events","new","Timeline of a sale link.",[
- "id|BIGINT UNSIGNED|PK AI|","sale_request_id|BIGINT UNSIGNED|FK=sale_requests|","event|VARCHAR(24)||created, shared, viewed, claimed, expired, revoked","actor|VARCHAR(80)||","data|JSON|NULL|","created_at|DATETIME(3)||"]),
-T(M,"Sales","sale_quotes","new","Priced quote shown to the buyer, with a validity time.",[
- "id|BIGINT UNSIGNED|PK AI|","sale_request_id|BIGINT UNSIGNED|FK=sale_requests|","plan_version_id|BIGINT UNSIGNED|FK=plan_versions|","quantity|INT||","unit_price|BIGINT||","total|BIGINT||","commission_bps|INT||override or default, resolved now","expires_at|DATETIME(3)||","created_at|DATETIME(3)||"]),
-T(M,"Sales","orders","new","A buyer's purchase with its frozen economic snapshot and three independent statuses.",[
- "id|BIGINT UNSIGNED|PK AI|","reference|VARCHAR(20)|UQ|NHO-261025-7K2M","buyer_account_id|VARCHAR(64)|FK=customers|","seller_id|BIGINT UNSIGNED|FK=sellers|",
- "sale_request_id|BIGINT UNSIGNED|NULL FK=sale_requests|","active_flag|TINYINT|NULL|1 = active order of the request","replaces_order_id|BIGINT UNSIGNED|NULL FK=orders|","quote_id|BIGINT UNSIGNED|FK=sale_quotes|",
- "plan_version_id|BIGINT UNSIGNED|FK=plan_versions|","item_id|VARCHAR(64)||","duration_days|INT||","is_lifetime|TINYINT(1)||","quantity|INT||","unit_price|BIGINT||","total|BIGINT||","currency|CHAR(3)|DEF='IDR'|",
- "commission_bps|INT||","referral_bps|INT|NULL|","referrer_seller_id|BIGINT UNSIGNED|NULL|","refund_window_hours|INT||snapshot","unused_refund_days|INT||snapshot","accepted_policies|JSON||{\"terms\":\"v3\",\"refund\":\"v2\"}",
- "fulfillment_mode|VARCHAR(8)||direct, codes","payment_status|VARCHAR(16)||unpaid, awaiting, checking, paid, attempt_ended","fulfillment_status|VARCHAR(16)||not_started, completed, recovery","refund_status|VARCHAR(16)|DEF='none'|none, requested, processing, partial, full",
- "winning_attempt_id|BIGINT UNSIGNED|UQ NULL|","payment_confirmed_at|DATETIME(3)|NULL|set once","settled_at|DATETIME(3)|NULL|provider settlement time","version|INT|DEF=1|","created_at|DATETIME(3)||"],
- ["UNIQUE (sale_request_id, active_flag)","CHECK (fulfillment_mode = 'codes' OR quantity = 1)","KEY (buyer_account_id, created_at)","KEY (seller_id, created_at)"]),
-T(M,"Sales","store_sales","new","In-app Google Play / App Store purchases credited to an agent code (flow B).",[
- "id|BIGINT UNSIGNED|PK AI|","store|VARCHAR(8)||google, apple","store_transaction_id|VARCHAR(128)||","original_transaction_id|VARCHAR(128)|NULL|Apple restore dedup","nahj_order_id|VARCHAR(64)||client_order_id in nahj.orders",
- "user_account_id|VARCHAR(64)||","item_id|VARCHAR(64)||","agent_code|VARCHAR(16)||as copied onto the nahj order","seller_id|BIGINT UNSIGNED|FK=sellers|frozen","agent_type|VARCHAR(12)||frozen",
- "reported_price|BIGINT|NULL|from the store if available","reported_currency|CHAR(3)|NULL|","earns|TINYINT(1)||currency in the earning list, or unknown","base_price|BIGINT||IDR, plan_versions.store_base_price (gross)",
- "commission_bps|INT||0 for employees","commission_amount|BIGINT||base_price × rate","purchased_at|DATETIME(3)||","hold_hours|INT||wallet override or store default, frozen","commission_release_at|DATETIME(3)||",
- "status|VARCHAR(12)||recorded, released, refunded","refunded_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||"],
- ["UNIQUE (store, store_transaction_id)","KEY (seller_id, purchased_at)"]),
+ "status|VARCHAR(12)||draft, awaiting, claimed, expired, revoked","expires_at|DATETIME(3)||link validity",
+ "quote_plan_id|BIGINT UNSIGNED|NULL FK=plans|current quote","quote_unit_price|BIGINT|NULL|","quote_total|BIGINT|NULL|","quote_commission_bps|INT|NULL|","quote_expires_at|DATETIME(3)|NULL|","quote_version|INT|DEF=0|a changed quote needs review again",
+ "claimed_by_account_id|VARCHAR(64)|NULL|","claimed_at|DATETIME(3)|NULL|","version|INT|DEF=1|","created_at|DATETIME(3)||"]),
+T(M,"Sales","orders","new","Every sale, from both channels: web (sale link, QRIS/VA) and store (in-app purchase with agent code). Frozen snapshot and three independent statuses.",[
+ "id|BIGINT UNSIGNED|PK AI|","reference|VARCHAR(20)|UQ|NHO-261025-7K2M","channel|VARCHAR(6)||web, store","buyer_account_id|VARCHAR(64)|FK=customers|","seller_id|BIGINT UNSIGNED|FK=sellers|",
+ "sale_request_id|BIGINT UNSIGNED|NULL FK=sale_requests|web only","active_flag|TINYINT|NULL|1 = active order of the request","replaces_order_id|BIGINT UNSIGNED|NULL FK=orders|",
+ "plan_id|BIGINT UNSIGNED|FK=plans|","item_id|VARCHAR(64)||","duration_days|INT||","is_lifetime|TINYINT(1)||","quantity|INT||store: always 1","unit_price|BIGINT||web price, or store base price","total|BIGINT||","currency|CHAR(3)|DEF='IDR'|",
+ "commission_bps|INT||web or store rate; 0 for employees","referral_bps|INT|NULL|","referrer_seller_id|BIGINT UNSIGNED|NULL|","refund_window_hours|INT||snapshot","unused_refund_days|INT||snapshot","accepted_policies|JSON|NULL|web: {\"terms\":\"v3\",\"refund\":\"v2\"}",
+ "fulfillment_mode|VARCHAR(8)||direct, codes (store: direct)","payment_status|VARCHAR(16)||unpaid, awaiting, checking, paid, attempt_ended","fulfillment_status|VARCHAR(16)||not_started, completed, recovery","refund_status|VARCHAR(16)|DEF='none'|none, requested, processing, partial, full",
+ "winning_attempt_id|BIGINT UNSIGNED|UQ NULL|web","payment_confirmed_at|DATETIME(3)|NULL|set once; store: purchase time","settled_at|DATETIME(3)|NULL|",
+ "store|VARCHAR(8)|NULL|google, apple","store_transaction_id|VARCHAR(128)|NULL|","original_transaction_id|VARCHAR(128)|NULL|Apple restore dedup","nahj_order_id|VARCHAR(64)|NULL|client_order_id in nahj.orders",
+ "agent_code|VARCHAR(16)|NULL|as copied onto the nahj order","reported_price|BIGINT|NULL|from the store, reports only","reported_currency|CHAR(3)|NULL|","earns|TINYINT(1)|DEF=1|store: currency rule","store_hold_hours|INT|NULL|frozen wallet override or default",
+ "version|INT|DEF=1|","created_at|DATETIME(3)||"],
+ ["UNIQUE (sale_request_id, active_flag)","UNIQUE (store, store_transaction_id)","CHECK (fulfillment_mode = 'codes' OR quantity = 1)","KEY (buyer_account_id, created_at)","KEY (seller_id, created_at)"]),
 
 // ---------------- payment ----------------
-T(M,"Payments","payment_providers","new","Configured gateways. Secrets are references to the secret store, never values.",[
- "code|VARCHAR(16)|PK|xendit, midtrans, fake","name|VARCHAR(64)||","enabled|TINYINT(1)||","environment|VARCHAR(12)||sandbox, production","credentials_ref|VARCHAR(128)||","webhook_secret_ref|VARCHAR(128)||","updated_at|DATETIME(3)||"]),
-T(M,"Payments","payment_routes","new","Which provider handles which payment method, with priority, limits and fee.",[
- "id|BIGINT UNSIGNED|PK AI|","config_version_id|BIGINT UNSIGNED|FK=config_versions|","method|VARCHAR(24)||qris, va_bca, va_bni, gopay…","provider_code|VARCHAR(16)|FK=payment_providers|","priority|INT||1 = first","enabled|TINYINT(1)||",
- "min_amount|BIGINT|NULL|","max_amount|BIGINT|NULL|","fee_fixed|BIGINT|DEF=0|","fee_bps|INT|DEF=0|","vat_included|TINYINT(1)|DEF=0|"]),
-T(M,"Payments","payment_attempts","new","One try to pay an order. Several attempts can belong to one order; the first valid success wins.",[
- "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","provider|VARCHAR(16)||","method|VARCHAR(24)||","route_version|INT||","merchant_id|VARCHAR(64)||","expected_amount|BIGINT||","received_amount|BIGINT|NULL|","currency|CHAR(3)||",
- "provider_reference|VARCHAR(128)|NULL|","provider_transaction_id|VARCHAR(128)|NULL|","status|VARCHAR(12)||pending, succeeded, failed, expired, unknown","instructions|JSON|NULL|QR string or VA number",
- "expires_at|DATETIME(3)|NULL|","succeeded_at|DATETIME(3)|NULL|","settled_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||"],["UNIQUE (provider, provider_transaction_id)","KEY (order_id)"]),
-T(M,"Payments","provider_events","new","Every webhook body, stored before processing.",[
- "id|BIGINT UNSIGNED|PK AI|","provider|VARCHAR(16)||","event_id|VARCHAR(128)||","attempt_id|BIGINT UNSIGNED|NULL FK=payment_attempts|","payload|JSON||raw body","received_at|DATETIME(3)||","processed_at|DATETIME(3)|NULL|","result|VARCHAR(16)|NULL|accepted, duplicate, mismatch, ignored"],
- ["UNIQUE (provider, event_id)"]),
-T(M,"Payments","payment_cases","new","Duplicate, mismatched or unknown payments for Finance.",[
- "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","attempt_id|BIGINT UNSIGNED|FK=payment_attempts|","kind|VARCHAR(12)||duplicate, mismatch, unknown","status|VARCHAR(12)||open, resolved",
- "owner_staff_id|BIGINT UNSIGNED|NULL|","resolution|VARCHAR(255)|NULL|","created_at|DATETIME(3)||","resolved_at|DATETIME(3)|NULL|"]),
+T(M,"Payments","payment_attempts","new","One try to pay a web order. Several attempts can belong to one order; the first valid success wins. Providers and routes come from settings.",[
+ "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","provider|VARCHAR(16)||xendit, midtrans, fake","method|VARCHAR(24)||qris, va_bca…","route_version|INT||settings version used","merchant_id|VARCHAR(64)||",
+ "expected_amount|BIGINT||","received_amount|BIGINT|NULL|","currency|CHAR(3)||","provider_reference|VARCHAR(128)|NULL|","provider_transaction_id|VARCHAR(128)|NULL|",
+ "status|VARCHAR(12)||pending, succeeded, failed, expired, unknown","instructions|JSON|NULL|QR string or VA number","expires_at|DATETIME(3)|NULL|","succeeded_at|DATETIME(3)|NULL|","settled_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||"],
+ ["UNIQUE (provider, provider_transaction_id)","KEY (order_id)"]),
+T(M,"Payments","provider_events","new","Every webhook body from payment and payout providers, stored before processing.",[
+ "id|BIGINT UNSIGNED|PK AI|","provider|VARCHAR(16)||","kind|VARCHAR(8)||payment, payout","event_id|VARCHAR(128)||","attempt_id|BIGINT UNSIGNED|NULL FK=payment_attempts|","payload|JSON||raw body",
+ "received_at|DATETIME(3)||","processed_at|DATETIME(3)|NULL|","result|VARCHAR(16)|NULL|accepted, duplicate, mismatch, ignored"],["UNIQUE (provider, event_id)"]),
 
-// ---------------- fulfillment ----------------
-T(M,"Fulfillment and codes","purchased_units","new","One row per paid unit (10 codes = 10 rows). Price, commission, status and deadlines are per unit.",[
- "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","unit_index|INT||1..quantity","unit_price|BIGINT||","commission_amount|BIGINT||","referral_amount|BIGINT|DEF=0|","reversible_amount|BIGINT||left to refund or charge back",
- "status|VARCHAR(20)||awaiting_fulfillment, issued, redeemed, activated, reserved, refunded, voided","activated_account_id|VARCHAR(64)|NULL|","activated_at|DATETIME(3)|NULL|",
- "refund_deadline_at|DATETIME(3)||payment + 30 d unused; activation + 48 h used","version|INT|DEF=1|"],["UNIQUE (order_id, unit_index)","KEY (order_id, status)"]),
-T(M,"Fulfillment and codes","activation_credentials","new","The code for a unit. Stored as a keyed hash for lookup and encrypted for showing again; never plain text.",[
- "id|BIGINT UNSIGNED|PK AI|","unit_id|BIGINT UNSIGNED|FK=purchased_units|","code_hash|BINARY(32)|UQ|HMAC-SHA256","code_encrypted|VARBINARY(256)||AES-GCM","code_last4|CHAR(4)||masked display",
- "status|VARCHAR(12)||live, consumed, voided","live_flag|TINYINT|NULL|1 while live","replaces_credential_id|BIGINT UNSIGNED|NULL|","published_at|DATETIME(3)|NULL|in My Purchases","created_at|DATETIME(3)||"],["UNIQUE (unit_id, live_flag)"]),
-T(M,"Fulfillment and codes","redemptions","new","Who redeemed which code.",[
- "id|BIGINT UNSIGNED|PK AI|","credential_id|BIGINT UNSIGNED|UQ FK=activation_credentials|","account_id|VARCHAR(64)||","operation_key|VARCHAR(64)|UQ|","created_at|DATETIME(3)||"]),
-T(M,"Fulfillment and codes","deliveries","new","How codes reached the buyer: portal publication, email, export.",[
- "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","unit_ids|JSON||","channel|VARCHAR(12)||portal, email, export","actor|VARCHAR(80)||system or buyer","status|VARCHAR(12)||done, queued, failed","created_at|DATETIME(3)||"]),
-T(M,"Fulfillment and codes","entitlement_grants","new","Local record of each VIP grant call to nahj_backend.",[
- "unit_id|BIGINT UNSIGNED|PK FK=purchased_units|one grant per unit","account_id|VARCHAR(64)||","client_order_id|VARCHAR(64)|UQ|mk-unit-{unit_id} in nahj.orders","status|VARCHAR(16)||requested, granted, refused_lifetime, refund_requested, refunded, failed",
- "vip_start|DATETIME(3)|NULL|returned by nahj_backend","vip_end|DATETIME(3)|NULL|","refunded_seconds|BIGINT|NULL|","updated_at|DATETIME(3)||"]),
+// ---------------- units & codes ----------------
+T(M,"Units and codes","units","new","One row per paid unit (10 codes = 10 rows; a store order = 1 row). Holds price, commission release, VIP grant and refund link.",[
+ "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","unit_index|INT||1..quantity","unit_price|BIGINT||","commission_amount|BIGINT||0 for employees","referral_amount|BIGINT|DEF=0|","reversible_amount|BIGINT||left to refund or charge back",
+ "status|VARCHAR(20)||awaiting_fulfillment, issued, activated, reserved, refunded, voided","activated_account_id|VARCHAR(64)|NULL|","activated_at|DATETIME(3)|NULL|","refund_deadline_at|DATETIME(3)||30 d unused, 48 h after activation",
+ "grant_client_order_id|VARCHAR(64)|UQ NULL|mk-unit-{id} in nahj.orders (web units)","grant_status|VARCHAR(16)|NULL|requested, granted, refused_lifetime, refunded, failed","vip_start|DATETIME(3)|NULL|","vip_end|DATETIME(3)|NULL|",
+ "commission_status|VARCHAR(12)||pending, held, released, reversed, none","commission_release_at|DATETIME(3)|NULL|NULL until a code is redeemed or 30 d pass","refund_id|BIGINT UNSIGNED|NULL FK=refunds|","version|INT|DEF=1|"],
+ ["UNIQUE (order_id, unit_index)","KEY (order_id, status)","KEY (commission_status, commission_release_at)"]),
+T(M,"Units and codes","codes","new","The activation code of a unit, including replaced ones. Keyed hash for lookup, encrypted copy for showing again; never plain text.",[
+ "id|BIGINT UNSIGNED|PK AI|","unit_id|BIGINT UNSIGNED|FK=units|","code_hash|BINARY(32)|UQ|HMAC-SHA256","code_encrypted|VARBINARY(256)||AES-GCM","code_last4|CHAR(4)||masked display",
+ "status|VARCHAR(12)||live, consumed, voided","live_flag|TINYINT|NULL|1 while live","replaces_code_id|BIGINT UNSIGNED|NULL FK=codes|","published_at|DATETIME(3)|NULL|in My Purchases",
+ "redeemed_account_id|VARCHAR(64)|NULL|","redeemed_at|DATETIME(3)|NULL|","redeem_operation_key|VARCHAR(64)|UQ NULL|same-account retry returns the stored result","created_at|DATETIME(3)||"],["UNIQUE (unit_id, live_flag)"]),
 
 // ---------------- ledger ----------------
-T(M,"Ledger","ledger_accounts","new","Seller buckets (pending, held, available, locked) and platform accounts, with a cached balance.",[
- "id|BIGINT UNSIGNED|PK AI|","owner_type|VARCHAR(8)||seller, platform","owner_id|BIGINT UNSIGNED|NULL|seller id","account_code|VARCHAR(32)||pending, available… or provider_clearing, commission_expense…",
- "qualifier|VARCHAR(16)|DEF=''|provider code for per-provider accounts","market|CHAR(2)||","currency|CHAR(3)||","balance|BIGINT|DEF=0|credits − debits for liabilities","version|INT|DEF=1|"],
- ["UNIQUE (owner_type, owner_id, account_code, qualifier, market)"]),
 T(M,"Ledger","journals","new","One balanced business event. Never edited; corrections are new journals.",[
- "id|BIGINT UNSIGNED|PK AI|","journal_type|VARCHAR(40)||payment_accepted, commission_accrued, withdrawal_paid…","source_type|VARCHAR(24)||unit, store_sale, withdrawal, refund…","source_id|BIGINT UNSIGNED||",
- "seller_id|BIGINT UNSIGNED|NULL|","approval_request_id|BIGINT UNSIGNED|NULL|manual adjustments","memo|VARCHAR(255)|NULL|","posted_at|DATETIME(3)||"],["UNIQUE (journal_type, source_type, source_id)"]),
-T(M,"Ledger","postings","new","The debit and credit lines of a journal. Sum of debits = sum of credits.",[
- "id|BIGINT UNSIGNED|PK AI|","journal_id|BIGINT UNSIGNED|FK=journals|","account_id|BIGINT UNSIGNED|FK=ledger_accounts|","debit|BIGINT|DEF=0|","credit|BIGINT|DEF=0|"],["KEY (account_id, journal_id)"]),
-T(M,"Ledger","commissions","new","Each commission to release: web unit, store sale or referral award. The maturity job works from this table.",[
- "id|BIGINT UNSIGNED|PK AI|","source_type|VARCHAR(16)||unit, store_sale, referral_award","source_id|BIGINT UNSIGNED||","seller_id|BIGINT UNSIGNED|FK=sellers|","amount|BIGINT||",
- "status|VARCHAR(12)||pending, held, released, reversed","release_at|DATETIME(3)|NULL|NULL until a code unit is redeemed or its 30 days end","released_journal_id|BIGINT UNSIGNED|NULL|","reversed_journal_id|BIGINT UNSIGNED|NULL|"],
- ["UNIQUE (source_type, source_id)","KEY (status, release_at)"]),
+ "id|BIGINT UNSIGNED|PK AI|","journal_type|VARCHAR(40)||payment_accepted, commission_accrued, withdrawal_paid…","source_type|VARCHAR(24)||unit, order, withdrawal, refund, referral_award, approval","source_id|BIGINT UNSIGNED||",
+ "seller_id|BIGINT UNSIGNED|NULL|","approval_id|BIGINT UNSIGNED|NULL FK=approvals|manual adjustments","memo|VARCHAR(255)|NULL|","posted_at|DATETIME(3)||"],["UNIQUE (journal_type, source_type, source_id)"]),
+T(M,"Ledger","postings","new","Debit and credit lines. Accounts are fixed codes; a balance is the sum of its postings.",[
+ "id|BIGINT UNSIGNED|PK AI|","journal_id|BIGINT UNSIGNED|FK=journals|","account|VARCHAR(48)||seller:12:available · platform:provider_clearing:xendit · platform:commission_expense","seller_id|BIGINT UNSIGNED|NULL|for fast wallet queries",
+ "debit|BIGINT|DEF=0|","credit|BIGINT|DEF=0|"],["KEY (account, journal_id)","KEY (seller_id, account)"]),
 
 // ---------------- wallet ----------------
-T(M,"Wallet and payouts","payout_providers","new","Configured payout services.",[
- "code|VARCHAR(16)|PK|xendit, midtrans_iris, fake","name|VARCHAR(64)||","enabled|TINYINT(1)||","environment|VARCHAR(12)||","credentials_ref|VARCHAR(128)||","webhook_secret_ref|VARCHAR(128)||","updated_at|DATETIME(3)||"]),
-T(M,"Wallet and payouts","payout_routes","new","Destination type → payout provider, with fee and limits.",[
- "id|BIGINT UNSIGNED|PK AI|","config_version_id|BIGINT UNSIGNED|FK=config_versions|","destination_type|VARCHAR(12)||bank, ewallet","provider_code|VARCHAR(16)|FK=payout_providers|","priority|INT||","enabled|TINYINT(1)||","fee_fixed|BIGINT|DEF=0|","min_amount|BIGINT|NULL|","max_amount|BIGINT|NULL|"]),
-T(M,"Wallet and payouts","payout_destinations","new","A seller's bank or e-wallet accounts. Full numbers only encrypted.",[
+T(M,"Wallet","payout_destinations","new","A seller's bank or e-wallet accounts. Full numbers only encrypted.",[
  "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","type|VARCHAR(12)||bank, ewallet","institution_code|VARCHAR(16)||BCA, DANA…","account_number_enc|VARBINARY(256)||","account_last4|CHAR(4)||","holder_name|VARCHAR(128)||",
  "verification_status|VARCHAR(12)||pending, verified, failed","provider_ref|VARCHAR(128)|NULL|","name_match|TINYINT(1)|NULL|","is_default|TINYINT(1)|DEF=0|","created_at|DATETIME(3)||","removed_at|DATETIME(3)|NULL|"]),
-T(M,"Wallet and payouts","withdrawal_fee_quotes","new","Fee shown before the seller confirms a withdrawal.",[
- "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","destination_id|BIGINT UNSIGNED|FK=payout_destinations|","gross|BIGINT||","fee|BIGINT||","net|BIGINT||","expires_at|DATETIME(3)||","created_at|DATETIME(3)||"]),
-T(M,"Wallet and payouts","withdrawals","new","A seller's withdrawal with frozen gross, fee, net and destination.",[
- "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","fee_quote_id|BIGINT UNSIGNED|FK=withdrawal_fee_quotes|","destination_snapshot|JSON||masked copy at confirmation","gross|BIGINT||","fee|BIGINT||","net|BIGINT||",
- "status|VARCHAR(12)||pending, processing, paid, rejected, cancelled, returned","finance_approver_id|BIGINT UNSIGNED|NULL|","second_approver_id|BIGINT UNSIGNED|NULL|above threshold","payout_id|BIGINT UNSIGNED|NULL FK=payouts|","created_at|DATETIME(3)||","version|INT|DEF=1|"]),
-T(M,"Wallet and payouts","payouts","new","One money-out transfer: a seller withdrawal or a refund paid back by payout.",[
- "id|BIGINT UNSIGNED|PK AI|","purpose|VARCHAR(12)||withdrawal, refund","provider_code|VARCHAR(16)||","destination_snapshot|JSON||","amount|BIGINT||","idempotency_key|VARCHAR(64)|UQ|sent to the provider",
- "status|VARCHAR(12)||queued, processing, paid, failed, unknown, returned","provider_ref|VARCHAR(128)|NULL|","submitted_at|DATETIME(3)|NULL|","completed_at|DATETIME(3)|NULL|"]),
+T(M,"Wallet","withdrawals","new","A seller's withdrawal, with its fee quote, frozen amounts and destination, approvals and the payout transfer.",[
+ "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","destination_id|BIGINT UNSIGNED|FK=payout_destinations|","destination_snapshot|JSON||masked copy at confirmation",
+ "gross|BIGINT||","fee|BIGINT||","net|BIGINT||","fee_quoted_at|DATETIME(3)||a stale quote needs a new confirmation",
+ "status|VARCHAR(12)||pending, processing, paid, rejected, cancelled, returned","finance_approver_id|BIGINT UNSIGNED|NULL|","second_approver_id|BIGINT UNSIGNED|NULL|above threshold",
+ "payout_provider|VARCHAR(16)|NULL|","payout_key|VARCHAR(64)|UQ NULL|idempotency key sent to the provider","provider_ref|VARCHAR(128)|NULL|","submitted_at|DATETIME(3)|NULL|","completed_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||","version|INT|DEF=1|"]),
 
-// ---------------- refund ----------------
-T(M,"Refunds and disputes","refunds","new","A refund of selected units, or of a surplus payment.",[
- "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","attempt_id|BIGINT UNSIGNED|FK=payment_attempts|","kind|VARCHAR(12)||units, surplus","amount|BIGINT||","reason|VARCHAR(255)||",
- "status|VARCHAR(16)||requested, approved, processing, succeeded, failed, rejected","refund_method|VARCHAR(12)|NULL|provider, payout","provider_command|VARCHAR(128)|NULL|","payout_id|BIGINT UNSIGNED|NULL FK=payouts|",
+// ---------------- refunds ----------------
+T(M,"Refunds","refunds","new","Refunds of selected units, surplus payments and chargebacks. Paid back by the provider, or by payout to the buyer.",[
+ "id|BIGINT UNSIGNED|PK AI|","order_id|BIGINT UNSIGNED|FK=orders|","attempt_id|BIGINT UNSIGNED|NULL FK=payment_attempts|NULL for store refunds","kind|VARCHAR(12)||units, surplus, chargeback, store","amount|BIGINT||","reason|VARCHAR(255)||",
+ "status|VARCHAR(16)||requested, approved, processing, succeeded, failed, rejected","method|VARCHAR(12)|NULL|provider, payout, store","provider_command|VARCHAR(128)|NULL|","provider_case_id|VARCHAR(128)|NULL|chargebacks","deadline_at|DATETIME(3)|NULL|chargeback response deadline",
+ "payout_destination|JSON|NULL|buyer's bank or e-wallet, masked","payout_provider|VARCHAR(16)|NULL|","payout_key|VARCHAR(64)|UQ NULL|","payout_ref|VARCHAR(128)|NULL|",
  "requested_by|VARCHAR(80)||","approved_by|BIGINT UNSIGNED|NULL|","version|INT|DEF=1|","created_at|DATETIME(3)||"]),
-T(M,"Refunds and disputes","refund_units","new","Which units a refund covers, with each unit's original amounts.",[
- "refund_id|BIGINT UNSIGNED|PK FK=refunds|","unit_id|BIGINT UNSIGNED|PK FK=purchased_units|","amount|BIGINT||original unit price","commission|BIGINT||original commission"]),
-T(M,"Refunds and disputes","disputes","new","Provider disputes and chargebacks.",[
- "id|BIGINT UNSIGNED|PK AI|","attempt_id|BIGINT UNSIGNED|FK=payment_attempts|","order_id|BIGINT UNSIGNED|FK=orders|","provider_case_id|VARCHAR(128)||","stage|VARCHAR(12)||inquiry, chargeback, won, lost","amount|BIGINT||",
- "deadline_at|DATETIME(3)|NULL|","owner_staff_id|BIGINT UNSIGNED|NULL|","status|VARCHAR(12)||open, closed","created_at|DATETIME(3)||"]),
-T(M,"Refunds and disputes","dispute_evidence","new","Files and notes sent for a dispute.",[
- "id|BIGINT UNSIGNED|PK AI|","dispute_id|BIGINT UNSIGNED|FK=disputes|","file_key|VARCHAR(255)|NULL|","note|TEXT|NULL|","uploaded_by|BIGINT UNSIGNED||","created_at|DATETIME(3)||"]),
 
-// ---------------- referral ----------------
-T(M,"Referrals","referral_changes","new","History of referrer changes (admin only, prospective).",[
- "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","old_referrer_id|BIGINT UNSIGNED|NULL|","new_referrer_id|BIGINT UNSIGNED|NULL|","changed_by|BIGINT UNSIGNED||","reason|VARCHAR(255)||","effective_from|DATETIME(3)||"]),
+// ---------------- referrals ----------------
 T(M,"Referrals","referral_periods","new","One referred seller's Jakarta month: target, rate and net qualified sales.",[
  "id|BIGINT UNSIGNED|PK AI|","referrer_seller_id|BIGINT UNSIGNED|FK=sellers|","referred_seller_id|BIGINT UNSIGNED|FK=sellers|","period_month|CHAR(7)||2026-10","target_amount|BIGINT||snapshot","reward_bps|INT||snapshot",
  "net_qualified_sales|BIGINT|DEF=0|","qualified|TINYINT(1)|DEF=0|","revision|INT|DEF=0|increases on each correction","closed_at|DATETIME(3)|NULL|"],["UNIQUE (referred_seller_id, period_month)"]),
-T(M,"Referrals","referral_awards","new","Reward per qualifying sale: provisional, awarded or reversed.",[
- "id|BIGINT UNSIGNED|PK AI|","period_id|BIGINT UNSIGNED|FK=referral_periods|","source_type|VARCHAR(16)||unit, store_sale","source_id|BIGINT UNSIGNED||","amount|BIGINT||","status|VARCHAR(12)||provisional, awarded, reversed","revision|INT||"],
- ["UNIQUE (period_id, source_type, source_id, revision)"]),
+T(M,"Referrals","referral_awards","new","Reward per qualifying unit, with its release state.",[
+ "id|BIGINT UNSIGNED|PK AI|","period_id|BIGINT UNSIGNED|FK=referral_periods|","unit_id|BIGINT UNSIGNED|FK=units|","amount|BIGINT||","status|VARCHAR(12)||provisional, awarded, released, reversed","release_at|DATETIME(3)|NULL|","revision|INT||"],
+ ["UNIQUE (period_id, unit_id, revision)"]),
 
 // ---------------- support ----------------
-T(M,"Support","cases","new","Support cases between customers, sellers and Nahj.",[
- "id|BIGINT UNSIGNED|PK AI|","reference|VARCHAR(20)|UQ|","customer_account_id|VARCHAR(64)|NULL|","seller_id|BIGINT UNSIGNED|NULL|","order_id|BIGINT UNSIGNED|NULL|","owner|VARCHAR(8)||seller, nahj","assignee_staff_id|BIGINT UNSIGNED|NULL|",
- "category|VARCHAR(24)||","severity|VARCHAR(8)||low, normal, high","status|VARCHAR(20)||open, waiting_customer, waiting_nahj, reopened, closed","created_at|DATETIME(3)||","updated_at|DATETIME(3)||","closed_at|DATETIME(3)|NULL|"]),
-T(M,"Support","case_messages","new","Public replies and internal notes, kept apart by audience.",[
+T(M,"Support","cases","new","Support cases, and Finance work items such as duplicate or mismatched payments.",[
+ "id|BIGINT UNSIGNED|PK AI|","reference|VARCHAR(20)|UQ|","kind|VARCHAR(20)||support, payment_duplicate, payment_mismatch, reconciliation","customer_account_id|VARCHAR(64)|NULL|","seller_id|BIGINT UNSIGNED|NULL|","order_id|BIGINT UNSIGNED|NULL|",
+ "owner|VARCHAR(8)||seller, nahj","assignee_staff_id|BIGINT UNSIGNED|NULL|","severity|VARCHAR(8)||low, normal, high","status|VARCHAR(20)||open, waiting_customer, waiting_nahj, reopened, closed",
+ "created_at|DATETIME(3)||","updated_at|DATETIME(3)||","closed_at|DATETIME(3)|NULL|"],["KEY (kind, status)"]),
+T(M,"Support","case_messages","new","Public replies and internal notes, kept apart by audience. Attachments are files.",[
  "id|BIGINT UNSIGNED|PK AI|","case_id|BIGINT UNSIGNED|FK=cases|","author_type|VARCHAR(10)||customer, seller, staff, system","author_id|VARCHAR(64)||","audience|VARCHAR(10)||public, internal","body|TEXT||","created_at|DATETIME(3)||"]),
-T(M,"Support","case_attachments","new","Files on a case, scanned before download.",[
- "id|BIGINT UNSIGNED|PK AI|","case_id|BIGINT UNSIGNED|FK=cases|","message_id|BIGINT UNSIGNED|NULL FK=case_messages|","file_key|VARCHAR(255)||","mime|VARCHAR(64)||","size_bytes|INT||","scan_status|VARCHAR(12)||pending, clean, rejected"]),
 
-// ---------------- notify ----------------
-T(M,"Notifications","notifications","new","One row per event, recipient and channel. Retries never repeat a business effect.",[
- "id|BIGINT UNSIGNED|PK AI|","event_type|VARCHAR(40)||","event_key|VARCHAR(160)||","recipient_type|VARCHAR(10)||customer, seller, staff","recipient_id|VARCHAR(64)||","channel|VARCHAR(10)||portal, email, push",
- "category|VARCHAR(16)||essential, optional","title|VARCHAR(200)||","body|TEXT||never a raw code in title or push","status|VARCHAR(12)||queued, sent, failed","attempts|INT|DEF=0|","read_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||","sent_at|DATETIME(3)|NULL|"],
+// ---------------- platform ----------------
+T(M,"Platform","notifications","new","One row per event, recipient and channel. Retries never repeat a business effect.",[
+ "id|BIGINT UNSIGNED|PK AI|","event_key|VARCHAR(160)||","recipient_type|VARCHAR(10)||customer, seller, staff","recipient_id|VARCHAR(64)||","channel|VARCHAR(10)||portal, email, push",
+ "title|VARCHAR(200)||","body|TEXT||never a raw code in title or push","status|VARCHAR(12)||queued, sent, failed","attempts|INT|DEF=0|","read_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||","sent_at|DATETIME(3)|NULL|"],
  ["UNIQUE (event_key, recipient_id, channel)","KEY (recipient_id, read_at)"]),
-T(M,"Notifications","notification_preferences","new","Opt-outs for optional notifications.",[
- "account_id|VARCHAR(64)|PK|","category|VARCHAR(24)|PK|","channel|VARCHAR(10)|PK|","enabled|TINYINT(1)||"]),
-
-// ---------------- reporting ----------------
-T(M,"Reporting and exports","seller_daily_sales","new","Dashboard summary per seller, Jakarta day and channel.",[
- "seller_id|BIGINT UNSIGNED|PK|","day|DATE|PK|Asia/Jakarta","channel|VARCHAR(6)|PK|web, store","gross|BIGINT|DEF=0|","units|INT|DEF=0|","refunded|BIGINT|DEF=0|","commission|BIGINT|DEF=0|"]),
-T(M,"Reporting and exports","seller_customer_refs","new","A seller's view of their customers, pseudonymous, survives account deletion.",[
- "id|BIGINT UNSIGNED|PK AI|","seller_id|BIGINT UNSIGNED|FK=sellers|","account_id|VARCHAR(64)|NULL|NULL after anonymization","ref_code|VARCHAR(16)||shown to the seller","email_masked|VARCHAR(128)|NULL|","order_count|INT|DEF=0|","last_status|VARCHAR(16)|NULL|","last_order_at|DATETIME(3)|NULL|"],
- ["UNIQUE (seller_id, account_id)"]),
-T(M,"Reporting and exports","exports","new","Asynchronous CSV exports with expiry. A code export also publishes codes to the buyer.",[
- "id|BIGINT UNSIGNED|PK AI|","requester|VARCHAR(80)||","kind|VARCHAR(24)||codes, orders, ledger…","filters|JSON||","status|VARCHAR(12)||preparing, ready, expired, failed","file_key|VARCHAR(255)|NULL|private bucket","row_count|INT|NULL|","expires_at|DATETIME(3)|NULL|","created_at|DATETIME(3)||"]),
-
-// ---------------- audit & ops ----------------
-T(M,"Audit and operations","audit_events","new","Append-only record of who did what, with redacted before and after values.",[
- "id|BIGINT UNSIGNED|PK AI|","occurred_at|DATETIME(3)||","actor_type|VARCHAR(10)||customer, seller, staff, system, service","actor_id|VARCHAR(64)||","capability|VARCHAR(48)|NULL|","market|CHAR(2)|NULL|",
+T(M,"Platform","audit_events","new","Append-only record of who did what. Also holds sale-link timelines, referrer changes and imported security events.",[
+ "id|BIGINT UNSIGNED|PK AI|","occurred_at|DATETIME(3)||","actor_type|VARCHAR(10)||customer, seller, staff, system, service","actor_id|VARCHAR(64)||","capability|VARCHAR(48)|NULL|",
  "action|VARCHAR(48)||","entity_type|VARCHAR(24)||","entity_id|VARCHAR(64)||","reason|VARCHAR(255)|NULL|","before_redacted|JSON|NULL|","after_redacted|JSON|NULL|","outcome|VARCHAR(12)||ok, denied, failed",
  "command_ref|VARCHAR(64)|NULL|idempotency key","approver_id|BIGINT UNSIGNED|NULL|","request_id|VARCHAR(64)|NULL|"],["KEY (entity_type, entity_id, occurred_at)","KEY (actor_id, occurred_at)"]),
-T(M,"Audit and operations","outbox","new","Calls to providers, nahj_backend, Keycloak and email, committed with the business change and sent by the worker.",[
- "id|BIGINT UNSIGNED|PK AI|","topic|VARCHAR(32)||payment.create, grant.create, email.send…","event_key|VARCHAR(160)|UQ|","payload|JSON||","status|VARCHAR(12)||queued, sent, failed","attempts|INT|DEF=0|","next_try_at|DATETIME(3)||","last_error|VARCHAR(255)|NULL|","created_at|DATETIME(3)||","sent_at|DATETIME(3)|NULL|"],
- ["KEY (status, next_try_at)"]),
-T(M,"Audit and operations","jobs","new","Scheduled work, claimed with SELECT … FOR UPDATE SKIP LOCKED.",[
- "id|BIGINT UNSIGNED|PK AI|","kind|VARCHAR(32)||","job_key|VARCHAR(160)|UQ|","run_at|DATETIME(3)||","status|VARCHAR(12)||queued, running, done, failed","attempts|INT|DEF=0|","locked_by|VARCHAR(64)|NULL|","locked_until|DATETIME(3)|NULL|","payload|JSON|NULL|","last_error|VARCHAR(255)|NULL|"],
+T(M,"Platform","jobs","new","Outbox and scheduler in one table. An outbox call is a job due now; a deadline is a job due later. Claimed with SKIP LOCKED.",[
+ "id|BIGINT UNSIGNED|PK AI|","kind|VARCHAR(32)||payment.create, grant.create, email.send, maturity.run…","job_key|VARCHAR(160)|UQ|dedup key","payload|JSON|NULL|","run_at|DATETIME(3)||",
+ "status|VARCHAR(12)||queued, running, done, failed","attempts|INT|DEF=0|","locked_by|VARCHAR(64)|NULL|","locked_until|DATETIME(3)|NULL|","last_error|VARCHAR(255)|NULL|","created_at|DATETIME(3)||","done_at|DATETIME(3)|NULL|"],
  ["KEY (status, run_at)"]),
-T(M,"Audit and operations","job_runs","new","History of each job run for the operations screen.",[
- "id|BIGINT UNSIGNED|PK AI|","job_kind|VARCHAR(32)||","started_at|DATETIME(3)||","finished_at|DATETIME(3)|NULL|","status|VARCHAR(12)||","processed|INT|DEF=0|","error|VARCHAR(255)|NULL|"]),
-T(M,"Audit and operations","incidents","new","Problems that need an owner: reconciliation differences, overdue backlogs.",[
- "id|BIGINT UNSIGNED|PK AI|","kind|VARCHAR(32)||","severity|VARCHAR(8)||","subject|VARCHAR(128)||","status|VARCHAR(12)||open, resolved","owner_staff_id|BIGINT UNSIGNED|NULL|","note|TEXT|NULL|","opened_at|DATETIME(3)||","resolved_at|DATETIME(3)|NULL|"]),
+T(M,"Platform","files","new","Every uploaded or generated file: evidence, attachments, logos. The file lives in R2; this row controls access.",[
+ "id|BIGINT UNSIGNED|PK AI|","owner_type|VARCHAR(16)||seller_revision, case_message, refund, seller","owner_id|BIGINT UNSIGNED||","purpose|VARCHAR(24)||evidence, attachment, logo","bucket|VARCHAR(8)||private, public",
+ "file_key|VARCHAR(255)||","mime|VARCHAR(64)||","size_bytes|INT||","scan_status|VARCHAR(12)||pending, clean, rejected","uploaded_by|VARCHAR(80)||","created_at|DATETIME(3)||"],["KEY (owner_type, owner_id)"]),
 
 // ================= nahj (game) =================
 T(G,"Changes to existing tables","orders","changed","Existing table. Becomes the one record per purchase of VIP time (store, marketplace, admin, legacy). Only the highlighted columns are new.",[

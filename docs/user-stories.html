@@ -233,13 +233,13 @@ const STORIES = [
   S("CUS-02","customer","Open a sale link","a buyer","to open the seller's link and sign in with my Nahj account","the purchase lands on the right account",
     ["Opening or previewing the link never claims it","Sign in with Keycloak (same Nahj account as the app); guest accounts are refused","An expired or revoked link explains itself and offers the seller's profile"],"spec","T01 · T10 · sale_requests"),
   S("CUS-03","customer","Review and confirm the order","a buyer","to see the plan, quantity, delivery and IDR total before I commit","I know exactly what I pay for",
-    ["Choose one of five passes; quantity above 1 always means codes","Direct activation shows the signed-in account and is limited to quantity 1","A Lifetime holder cannot choose direct activation and is offered codes instead","The quote has a validity time; a changed quote needs review again","I accept the current terms; the order freezes price, commission, plan version and policy versions"],"confirmed","Decisions 12, 15 · sale_quotes · orders"),
+    ["Choose one of five passes; quantity above 1 always means codes","Direct activation shows the signed-in account and is limited to quantity 1","A Lifetime holder cannot choose direct activation and is offered codes instead","The quote has a validity time; a changed quote needs review again","I accept the current terms; the order freezes price, commission, plan version and policy versions"],"confirmed","Decisions 12, 15 · sale_requests · orders"),
   S("CUS-04","customer","Pay with QRIS or VA","a buyer","to pay with QRIS or my bank's virtual account","I can use the app I already have",
     ["I choose a method, not a provider; the route picks Xendit or Midtrans","An uncertain result shows Checking until the provider confirms","A late success on an expired attempt is still accepted with the original price","A browser redirect or screenshot is never proof of payment","Paying twice opens a duplicate case; the extra payment is refunded"],"confirmed","Decision 5 · §6.8 · T03–T05"),
   S("CUS-05","customer","Get VIP right after paying","a parent buying for my own account","VIP to be active as soon as payment succeeds","my child can use it now",
     ["The system activates VIP at payment, with no seller step","The new days start at the end of my current VIP time","If activation is delayed I see Paid — activating, and it completes automatically","The app refreshes my access on resume or after the push hint"],"confirmed","Decision 17 · 03-db §4.1"),
   S("CUS-06","customer","Receive codes for others","a school buying 50 Yearly passes","all codes in My Purchases right after paying","I can hand them out the same day",
-    ["Every code is published at payment; email links to My Purchases (a single code may be in the email body)","Codes are masked by default; each reveal and export is audited","An export is a CSV that expires and asks me to sign in again","The order shows completed at payment, even before codes are redeemed"],"confirmed","Decision 17 · activation_credentials · exports"),
+    ["Every code is published at payment; email links to My Purchases (a single code may be in the email body)","Codes are masked by default; each reveal and export is audited","An export is a CSV that expires and asks me to sign in again","The order shows completed at payment, even before codes are redeemed"],"confirmed","Decision 17 · codes"),
   S("CUS-07","customer","See my subscription","an account holder","to see when my VIP ends and where each part came from","I know what I have",
     ["Shows the expiry date; Lifetime shows the label with its date (for example Lifetime · until 20 Oct 2126)","History lists each purchase: store, marketplace or gift, with its period","Gift recipients never see buyer payment data"],"confirmed","Decision 12 · nahj_backend projection"),
   S("CUS-08","customer","Ask for a refund","a buyer","to request a refund when it is still allowed","I am not stuck with a mistake",
@@ -254,7 +254,7 @@ const STORIES = [
 
   // Recipient
   S("REC-01","recipient","Redeem a code on the web","a code recipient","to enter my code and see what I will get before I confirm","VIP is added to the right account",
-    ["Check code shows plan, account and new expiry; nothing is reserved yet","Confirm consumes the code and adds the days at the end of my current time","A retry from the same account returns the same result","Another account that tries the code sees a neutral already-used message","Guest accounts cannot redeem"],"spec","T09 · T10 · redemptions"),
+    ["Check code shows plan, account and new expiry; nothing is reserved yet","Confirm consumes the code and adds the days at the end of my current time","A retry from the same account returns the same result","Another account that tries the code sees a neutral already-used message","Guest accounts cannot redeem"],"spec","T09 · T10 · codes"),
   S("REC-02","recipient","Redeem in the Android app","a child's parent","to redeem inside the Nahj app after the parent gate","we do not need a browser",
     ["Same check and confirm steps as the web, in landscape","Offline or uncertain commit looks up the result before any retry","Access refreshes after success; a notification is never the grant itself"],"spec","N01 · T23 · T24"),
   S("REC-03","recipient","Keep a code I cannot use","an account that already has Lifetime","the code to stay unused if it adds nothing","someone else can use it",
@@ -262,11 +262,11 @@ const STORIES = [
 
   // Seller
   S("SEL-01","seller","Apply to sell","a person who wants to sell Nahj","to submit an application with my public name and city","Nahj can approve me",
-    ["Draft, submit, more information required, approved or rejected","Evidence upload appears only when Nahj asks for it","Display name must be unique and cannot look official"],"spec","S01 · seller_applications"),
+    ["Draft, submit, more information required, approved or rejected","Evidence upload appears only when Nahj asks for it","Display name must be unique and cannot look official"],"spec","S01 · sellers"),
   S("SEL-02","seller","Finish onboarding","an approved seller","a checklist of what is left","I can start selling",
-    ["Portal opens only after TOTP is set up, current seller terms are accepted and the display name is approved","Each item shows done or what to do"],"spec","S02.2 · seller_onboarding"),
+    ["Portal opens only after TOTP is set up, current seller terms are accepted and the display name is approved","Each item shows done or what to do"],"spec","S02.2 · sellers"),
   S("SEL-03","seller","Edit my public profile","a seller","to change my name, logo or contact","my page stays accurate",
-    ["Edits go to review; the approved version stays live meanwhile","Approved logos are served publicly; other files stay private"],"spec","S16 · seller_profile_revisions"),
+    ["Edits go to review; the approved version stays live meanwhile","Approved logos are served publicly; other files stay private"],"spec","S16 · seller_revisions"),
   S("SEL-04","seller","Create and share a sale link","a seller","to make a link for a plan and quantity and send it","the buyer can pay Nahj directly",
     ["Pick plan, quantity and direct or codes; see price and my commission","Share by link or QR; revoke or let it expire","Each change is in the request timeline","A suspended seller cannot create links"],"spec","S04 · S05 · sale_requests"),
   S("SEL-05","seller","See my dashboard","a seller","my sales and balances at a glance","I know how I am doing",
@@ -282,13 +282,13 @@ const STORIES = [
   S("SEL-10","seller","Support my customers","a seller","to reply to questions about my own sales","customers stay happy",
     ["I see masked customer details only","Payment and refund issues are routed to Nahj","Public replies and internal notes are separate"],"spec","S08 · cases"),
   S("SEL-12","seller","Share my agent code","an agent","my own permanent agent code with a link and QR","users who buy in the app are credited to me",
-    ["One code per agent: AGT- plus 6 characters, without look-alike characters","Optional custom alias such as TOKOILMU, approved by staff","Dashboard shows web sales and app-store sales separately"],"confirmed","Decision 18 · agent_codes"),
+    ["One code per agent: AGT- plus 6 characters, without look-alike characters","Optional custom alias such as TOKOILMU, approved by staff","Dashboard shows web sales and app-store sales separately"],"confirmed","Decision 18 · sellers.agent_code"),
   S("SEL-11","seller","Pause my listing","a seller going on holiday","to hide from the directory","I do not get new customers I cannot serve",
     ["Pause hides the listing only; my links and history keep working"],"spec","T20"),
 
   // Finance
   S("FIN-01","finance","Resolve payment exceptions","Finance","a queue of duplicate and mismatched payments","no money is misapplied",
-    ["Duplicate success: the original order is untouched; the extra payment is refunded","Wrong amount, currency or merchant: no fulfillment until reviewed"],"spec","A09 · payment_cases · T03 · T05"),
+    ["Duplicate success: the original order is untouched; the extra payment is refunded","Wrong amount, currency or merchant: no fulfillment until reviewed"],"spec","A09 · cases · T03 · T05"),
   S("FIN-02","finance","Review and approve refunds","Finance","to choose exactly which units to refund and see the effects first","refunds are correct",
     ["Only eligible units are offered: unused codes within 30 days, used passes within 48 h","Approval reserves the units and voids their codes at once","Refund through the original provider; if it cannot (VA, some QRIS) pay back by payout","Each unit's original price and commission are reversed once"],"confirmed","Decision 16 · §6.8 · 03-db §4.3"),
   S("FIN-03","finance","Process withdrawals","Finance","a withdrawal queue","sellers are paid safely",
@@ -298,7 +298,7 @@ const STORIES = [
   S("FIN-05","finance","Reconcile every day","Finance","provider records compared with the ledger per provider","differences are found early",
     ["Separate clearing accounts for Xendit and Midtrans","Differences become cases, never balance overwrites"],"spec","§6.4 · T25"),
   S("FIN-06","finance","Correct the ledger","Finance","to post a manual adjustment with a reason","mistakes are fixed visibly",
-    ["Needs evidence and an independent approver; the initiator cannot approve","Posted as a new journal; history is never edited"],"spec","approval_requests · T22"),
+    ["Needs evidence and an independent approver; the initiator cannot approve","Posted as a new journal; history is never edited"],"spec","approvals · T22"),
 
   // Support
   S("SUP-01","support","Work support cases","Support","cases with owner, severity and status","nothing is lost",
@@ -316,22 +316,22 @@ const STORIES = [
   S("SM-02","sellermgmt","Change seller status","Seller management","to pause, suspend or restore a seller","risk is contained",
     ["Suspension blocks new links, orders and attempts; paid orders and history keep working","Withdrawal holds are separate and need Finance capability","No automatic confiscation"],"spec","T20"),
   S("SM-03","sellermgmt","Open a risk case","Seller management","to place a scoped hold with an owner and review date","we can investigate without blocking everything",
-    ["Hold scopes: new sales, directory, commission release, withdrawal, unit, payment","Overdue reviews alert the owner; a hold never releases by itself"],"confirmed","Data-model change 3 · A13"),
+    ["Hold scopes: new sales, directory, commission release, withdrawal, unit, payment","Overdue reviews alert the owner; a hold never releases by itself"],"confirmed","holds · A13"),
 
   S("SM-04","sellermgmt","Register an employee agent","Seller management","to add company staff as employee agents","we can track their sales without paying commission",
     ["Employee agents earn 0% and no referral rewards; the wallet is hidden","They get an agent code and sale links like partners","Hidden from the public directory by default, with a switch"],"confirmed","Decision 20 · sellers.agent_type"),
 
   // Admin
   S("ADM-01","admin","Publish catalog versions","a Super Admin","to set the IDR price, commission and refund windows per plan","changes are controlled",
-    ["Each plan points to a nahj_backend VIP item and copies its days when published","Refund windows (48 h, 30 days) and the commission wait are settings; changes apply to new orders only","Published versions are never edited; new version with effective time and approval"],"confirmed","Decisions 14, 16 · plan_versions"),
+    ["Each plan points to a nahj_backend VIP item and copies its days when published","Refund windows (48 h, 30 days) and the commission wait are settings; changes apply to new orders only","Published versions are never edited; new version with effective time and approval"],"confirmed","Decisions 14, 16 · plans"),
   S("ADM-02","admin","Route payments","a Super Admin","to choose which provider handles each payment method","we can switch or add providers without code",
     ["Routes per method with priority, limits and fee","If the first provider is down when an attempt starts, the next one is used","Existing attempts always stay with their provider"],"confirmed","Decision 5 · §6.8"),
   S("ADM-03","admin","Manage staff","a Super Admin","to invite staff and give scoped capabilities","people only do their job",
-    ["TOTP always required for staff","Disabling staff ends their sessions at once","The last active Super Admin cannot be disabled"],"spec","A19 · staff_invitations"),
+    ["TOTP always required for staff","Disabling staff ends their sessions at once","The last active Super Admin cannot be disabled"],"spec","A19 · staff"),
   S("ADM-04","admin","Grant VIP as an exception","a Super Admin","to give VIP time without a payment, with a reason","special cases are handled",
-    ["Needs a second approver","Creates an admin order in nahj_backend; no fake payment or commission"],"confirmed","A07 · approval_requests"),
+    ["Needs a second approver","Creates an admin order in nahj_backend; no fake payment or commission"],"confirmed","A07 · approvals"),
   S("ADM-05","admin","Set store-channel rules","a Super Admin","to set the store base prices, store rates, holds and earning currencies","app-store commission is calculated correctly",
-    ["An IDR base price and a store commission rate per VIP item in the catalog","Default holds Google 3 days, Apple 14 days; each agent wallet can override them","Earning currency list starts with IDR","Changes apply to new store sales only"],"confirmed","Decisions 18, 19 · market settings"),
+    ["An IDR base price and a store commission rate per VIP item in the catalog","Default holds Google 3 days, Apple 14 days; each agent wallet can override them","Earning currency list starts with IDR","Changes apply to new store sales only"],"confirmed","Decisions 18, 19 · plans · settings"),
 
   // System
   S("SYS-01","system","Fulfill at payment","the system","to fulfill every unit in the payment-acceptance step","buyers get VIP or codes instantly",
@@ -341,7 +341,7 @@ const STORIES = [
   S("SYS-03","system","Release matured commission","the system","to release each unit's commission when it is due","sellers are paid on time",
     ["Hourly; per unit; respects holds","Code units wait for redemption or the 30-day end"],"confirmed","§6.4 · 03-db §4.5"),
   S("SYS-06","system","Credit store sales to agents","the system","every in-app store purchase with an agent code recorded and credited","agents earn from app sales",
-    ["nahj_backend copies the account's saved agent code onto the order at completion and sends a store-sale event through its outbox","Recorded once per store transaction; an Apple restore never counts again","Commission = the catalog's IDR base price for the item × the agent's store rate; employees earn 0","Only configured currencies earn (IDR first); others are recorded only","Released after the agent's hold: default Google 3 days, Apple 14 days"],"confirmed","Decisions 18, 19 · store_sales · prompts/02"),
+    ["nahj_backend copies the account's saved agent code onto the order at completion and sends a store-sale event through its outbox","Recorded once per store transaction; an Apple restore never counts again","Commission = the catalog's IDR base price for the item × the agent's store rate; employees earn 0","Only configured currencies earn (IDR first); others are recorded only","Released after the agent's hold: default Google 3 days, Apple 14 days"],"confirmed","Decisions 18, 19 · orders (channel store) · prompts/02"),
   S("SYS-07","system","Reverse commission on store refunds","the system","store refunds to reverse the agent's commission","agents are not paid for refunded sales",
     ["Google or Apple refund removes the order's unused VIP days in nahj_backend","A store-refund event reverses the commission once","After release, Available may go negative and future earnings cover it"],"confirmed","§6.9 · 03-db §6.2"),
   S("SYS-04","system","Close the referral month","the system","to qualify each referred seller at the start of a Jakarta month","rewards are correct",
