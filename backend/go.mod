@@ -1,6 +1,6 @@
 module github.com/aafb5cs/nahj-agent-marketing/backend
 
-go 1.23
+go 1.26
 
 require (
 	github.com/coreos/go-oidc/v3 v3.11.0
