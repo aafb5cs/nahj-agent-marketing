@@ -1,0 +1,15 @@
+# Secrets and local config
+.env
+*.env.local
+
+# Build output
+/backend/server
+/backend/server.exe
+*.exe
+/backend/bin/
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
