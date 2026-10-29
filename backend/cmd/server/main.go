@@ -33,7 +33,15 @@ func main() {
 		os.Exit(2)
 	}
 	mode := config.Mode(os.Args[1])
+	loaded, envErr := config.LoadDotEnv(".env")
 	log := logging.New("agent-marketing-" + string(mode))
+	if envErr != nil {
+		log.Error("reading .env", "error", envErr.Error())
+		os.Exit(1)
+	}
+	if loaded {
+		log.Info("loaded settings from .env (local development)")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -82,16 +90,23 @@ func runAPI(ctx context.Context, log *slog.Logger) error {
 	clk := clock.System{}
 
 	sessions := identity.NewSessions(conn, clk, cfg.SessionKey, cfg.SessionTTL)
-	verifier, err := identity.NewKeycloakVerifier(ctx, cfg.OIDC.Issuer, cfg.OIDC.AllowedAZP)
-	if err != nil {
-		return fmt.Errorf("keycloak discovery: %w", err)
-	}
-	login, err := identity.NewWebLogin(ctx, identity.LoginConfig{
-		Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
-		RedirectURL: cfg.OIDC.RedirectURL, SessionKey: cfg.SessionKey, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL,
-	}, sessions, clk)
-	if err != nil {
-		return fmt.Errorf("keycloak login: %w", err)
+	var verifier identity.TokenVerifier
+	var login *identity.WebLogin
+	if cfg.OIDC.Enabled() {
+		verifier, err = identity.NewKeycloakVerifier(ctx, cfg.OIDC.Issuer, cfg.OIDC.AllowedAZP)
+		if err != nil {
+			return fmt.Errorf("keycloak discovery: %w", err)
+		}
+		login, err = identity.NewWebLogin(ctx, identity.LoginConfig{
+			Issuer: cfg.OIDC.Issuer, ClientID: cfg.OIDC.ClientID, ClientSecret: cfg.OIDC.ClientSecret,
+			RedirectURL: cfg.OIDC.RedirectURL, SessionKey: cfg.SessionKey, CookieSecure: cfg.CookieSecure, SessionTTL: cfg.SessionTTL,
+		}, sessions, clk)
+		if err != nil {
+			return fmt.Errorf("keycloak login: %w", err)
+		}
+		log.Info("keycloak sign-in enabled", "issuer", cfg.OIDC.Issuer, "client_id", cfg.OIDC.ClientID)
+	} else {
+		log.Warn("keycloak sign-in is OFF: set MK_OIDC_ISSUER, MK_OIDC_CLIENT_ID, MK_OIDC_CLIENT_SECRET and MK_OIDC_REDIRECT_URL; protected routes refuse access until then")
 	}
 
 	engine, _ := api.New(api.Deps{
@@ -103,7 +118,11 @@ func runAPI(ctx context.Context, log *slog.Logger) error {
 		Login:        login,
 		Idempotency:  idempotency.NewStore(conn, clk),
 		CookieSecure: cfg.CookieSecure,
+		WebDir:       cfg.WebDir,
 	})
+	if cfg.WebDir != "" {
+		log.Info("serving web app", "dir", cfg.WebDir)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.HTTPAddr,

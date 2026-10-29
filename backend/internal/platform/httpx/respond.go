@@ -44,6 +44,7 @@ var (
 	ErrRateLimited         = &Error{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Message: "Too many attempts. Wait and try again."}
 	ErrInternal            = &Error{Status: http.StatusInternalServerError, Code: "INTERNAL", Message: "Something went wrong. Use the reference when contacting support."}
 	ErrServiceUnavailable  = &Error{Status: http.StatusServiceUnavailable, Code: "UNAVAILABLE", Message: "The service is not ready."}
+	ErrSignInOff           = &Error{Status: http.StatusServiceUnavailable, Code: "SIGN_IN_OFF", Message: "Sign-in is not configured on this server."}
 )
 
 type okBody struct {

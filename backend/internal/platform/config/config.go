@@ -17,6 +17,8 @@ type Config struct {
 	HTTPAddr      string
 	DBDSN         string
 	PublicBaseURL string
+	// WebDir holds the built web app (web/dist). Empty or missing: API only.
+	WebDir string
 
 	OIDC OIDC
 
@@ -52,10 +54,16 @@ const (
 	ModeMigrate Mode = "migrate"
 )
 
+// Enabled reports whether Keycloak sign-in is configured.
+func (o OIDC) Enabled() bool {
+	return o.Issuer != "" && o.ClientID != "" && o.ClientSecret != "" && o.RedirectURL != ""
+}
+
 // Load reads the environment and validates what the mode needs.
 func Load(mode Mode) (Config, error) {
 	c := Config{
 		HTTPAddr:      env("MK_HTTP_ADDR", ":8090"),
+		WebDir:        env("MK_WEB_DIR", "../web/dist"),
 		DBDSN:         os.Getenv("MK_DB_DSN"),
 		PublicBaseURL: strings.TrimRight(env("MK_PUBLIC_BASE_URL", "http://localhost:8090"), "/"),
 		OIDC: OIDC{
@@ -86,16 +94,8 @@ func Load(mode Mode) (Config, error) {
 		missing = append(missing, "MK_DB_DSN")
 	}
 	if mode == ModeAPI {
-		for name, v := range map[string]string{
-			"MK_OIDC_ISSUER":        c.OIDC.Issuer,
-			"MK_OIDC_CLIENT_ID":     c.OIDC.ClientID,
-			"MK_OIDC_CLIENT_SECRET": c.OIDC.ClientSecret,
-			"MK_OIDC_REDIRECT_URL":  c.OIDC.RedirectURL,
-		} {
-			if v == "" {
-				missing = append(missing, name)
-			}
-		}
+		// Keycloak settings are optional: without them the API starts with
+		// sign-in switched off, and every protected route refuses access.
 		key, kerr := hex.DecodeString(os.Getenv("MK_SESSION_KEY"))
 		if kerr != nil || len(key) < 32 {
 			missing = append(missing, "MK_SESSION_KEY (hex, at least 32 bytes)")

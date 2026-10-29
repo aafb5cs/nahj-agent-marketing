@@ -27,6 +27,7 @@ type Deps struct {
 	Login        *identity.WebLogin // nil in tests without Keycloak
 	Idempotency  *idempotency.Store
 	CookieSecure bool
+	WebDir       string // built web app; empty = API only
 }
 
 // Groups are the route groups that feature modules attach to, already
@@ -44,7 +45,7 @@ func New(d Deps) (*gin.Engine, Groups) {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(httpx.RequestIDMiddleware(), httpx.Recover(d.Log), httpx.AccessLog(d.Log))
-	r.NoRoute(func(c *gin.Context) { httpx.Fail(c, httpx.ErrNotFound) })
+	r.NoRoute(webApp(d.WebDir))
 
 	r.GET("/healthz", health(d.DB))
 
@@ -56,7 +57,14 @@ func New(d Deps) (*gin.Engine, Groups) {
 	if d.Login != nil {
 		auth.GET("/login", d.Login.Start)
 		auth.GET("/callback", d.Login.Callback)
+	} else {
+		off := func(c *gin.Context) { httpx.Fail(c, httpx.ErrSignInOff) }
+		auth.GET("/login", off)
+		auth.GET("/callback", off)
 	}
+	auth.GET("/config", func(c *gin.Context) {
+		httpx.OK(c, http.StatusOK, gin.H{"signInEnabled": d.Login != nil})
+	})
 	h := &identity.Handlers{Sessions: d.Sessions, CookieSecure: d.CookieSecure}
 	auth.GET("/session", identity.RequireAuth(), h.Me)
 	auth.POST("/logout", identity.RequireAuth(), identity.RequireCSRF(d.Sessions), h.Logout)

@@ -13,3 +13,7 @@
 .idea/
 .DS_Store
 Thumbs.db
+
+# Web app
+/web/node_modules/
+/web/dist/
