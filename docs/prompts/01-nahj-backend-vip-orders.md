@@ -41,7 +41,15 @@ Reference design (in the marketplace repo; ask the user if you need it): `docs/0
 
 ## 4. Schema changes
 
-There is no migration tool in this repo. Add an idempotent SQL script at `script/migrations/2026xxxx_vip_orders.sql` and document how to run it.
+**The SQL is already written, tested and applied to the local database. Do not write your own.** It is `script/nahj_modification.sql` in the marketplace repo (`D:\code\go\nahj\develop\agent_marketing\script\nahj_modification.sql`).
+
+- It covers this task **and** task 02: the new `orders` columns (including `agent_code`), the `idx_user_vip` index, the `marketplace_outbox` table, and both backfills below.
+- It is idempotent: every column, index and table is added only if missing, and the backfill skips rows it already created.
+- It was run twice on MySQL 8.4 and is applied to the local `nahj` database (Docker container `mysql8-container`, `127.0.0.1:3306`, user `root`, password `root`).
+
+Copy it into this repo as `script/migrations/20261029_marketplace.sql`, unchanged, so the repo records what was applied. If you find something in it that is wrong for this code, stop and report it instead of changing it silently.
+
+For reference, the `orders` changes are:
 
 ```sql
 ALTER TABLE orders
@@ -55,12 +63,12 @@ ALTER TABLE orders
   ADD KEY idx_user_vip (user_id, item_category, status, end_time);
 ```
 
-Backfill script, run once and safe to run again:
+The backfill (already in the script):
 
 - For `item_category`: set it from `items.item_category` for existing orders.
 - For every **active** VIP `user_subscription` row: insert a `legacy` order with `client_order_id = 'legacy-sub-{id}'`, `start_time = now`, `end_time = expired_at`, `item_category = 'vip_pass'`, `duration_days = CEIL(remaining days)`, and `is_lifetime = 1` if the plan is `vip_pass_lifetime`. This makes current VIP users' time visible to the new calculation. Skip a row if its `legacy-sub-{id}` order already exists.
 
-Keep `start_time` and `end_time` in the **same timezone convention the existing `orders` and `user_subscription` columns use**. Check `utis.GetNow()` and the DSN `loc` and `parseTime` settings, and state the convention in the plan. The internal API must return RFC 3339 timestamps with an offset.
+**Timezone: UTC.** `utis.GetNow()` already returns `time.Now().UTC()`, and the script uses `UTC_TIMESTAMP(3)`. Confirm the DSN `loc` and `parseTime` settings keep values in UTC when read back, and state it in the plan. The internal API must return RFC 3339 timestamps with an offset.
 
 ## 5. Core service
 
@@ -152,7 +160,7 @@ The marketplace uses `clientOrderId = "mk-unit-{unitId}"`.
    - a test approach.
    Wait for the user's approval.
 2. Work on a branch from `develop`, for example `feature/vip-orders`, in small commits. Do not push to `main` or `develop` without the user's say-so.
-3. **Tests.** The repo has no working DB test harness (see `CLAUDE.md`). Add a minimal integration test setup that initializes `utis.Gdb` against a local MySQL with the needed tables, and cover at least these scenarios:
+3. **Tests.** The repo has no working DB test harness (see `CLAUDE.md`). Add a minimal integration test setup that initializes `utis.Gdb` against the local MySQL (`root:root@tcp(127.0.0.1:3306)/`, read from an env var such as `NAHJ_TEST_MYSQL_DSN`, skip the tests when it is unset). Each test creates its own throwaway schema, loads `script/db.sql` plus the migration into it, and drops it afterwards; never run tests against the `nahj` database itself. Cover at least these scenarios:
    - Stacking: Monthly Jan 1 and Monthly Jan 10 → ends Mar 2.
    - Refund while running: refund the first on Jan 15 → it ends Jan 15, and the second runs Jan 15 → Feb 14.
    - Late refund of an ended order → 0 removed; newer orders unchanged.

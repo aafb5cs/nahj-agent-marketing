@@ -33,9 +33,8 @@ Read this repo's `CLAUDE.md` first and follow its conventions.
 
 ## 3. Schema
 
-Add to the migration script folder used by task 01:
+**Nothing to add.** `script/migrations/20261029_marketplace.sql` (copied in task 01 from the marketplace repo's `script/nahj_modification.sql`) already contains everything this task needs, and it is applied to the local database:
 
-```sql
 ALTER TABLE orders ADD COLUMN agent_code VARCHAR(16) NULL;
 
 CREATE TABLE marketplace_outbox (
@@ -51,6 +50,8 @@ CREATE TABLE marketplace_outbox (
   KEY idx_pending (sent_at, next_try_at)
 );
 ```
+
+(The block above is for reference only; do not run it again.)
 
 `users_attributes` keys, using the existing key/value table: `agent_code` and `agent_code_set_at`. Verify the table's structure and existing helpers (`GetUserAttribute` and friends) first.
 
@@ -86,6 +87,8 @@ Add the i18n keys to all three locale files (`en`, `ar`, `id`). Rate-limit `PUT`
 - **Admin and marketplace grants** never create outbox rows.
 
 ## 6. Calls to the marketplace
+
+**These marketplace endpoints are not built yet.** The marketplace builds them in its own step. Implement the client against the contract below and test it with an `httptest` server that plays the marketplace. In real use, until the endpoints exist, code validation returns `AGENT_002` and outbox events simply wait and retry, so nothing is lost.
 
 - Configuration section `marketplace`: `baseUrl`, Keycloak client credentials for this repo's service client `nahj-backend-service` (secrets only from the secret store or env, never committed), timeouts.
 - Client in `utis/marketplace.go`. It fetches and caches a client-credentials token from Keycloak and refreshes it before expiry.
