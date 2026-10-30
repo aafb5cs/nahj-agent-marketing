@@ -1,6 +1,6 @@
 # Nahj Seller Marketplace — Database Design: Subscriptions and Bulk Orders
 
-Status: draft for review, 2026-10-23.
+Status: draft for review, 2026-10-23; sections 2 and 6.3 revised 2026-10-30 (decision 21).
 Builds on `system-architecture.md` (§6) and the decisions in `02-system-analysis.md` (§2.3, §3).
 
 This document covers two things:
@@ -25,121 +25,102 @@ Other modules (sellers, ledger, referrals, support) are only referenced where th
 
 ## 2. Adding subscription time (`nahj_backend`, schema `nahj`)
 
-### 2.1 Idea
+### 2.1 Idea (revised 2026-10-30)
 
-Every source of VIP time is **one row in the existing `orders` table**: a store purchase, a marketplace unit, or an admin gift. Each row records the exact VIP period it covers (`start_time` to `end_time`). The user's expiry date is simply the latest `end_time` of their active VIP orders. `user_subscription` and `users.user_type` are kept up to date as a copy, so the current apps keep working.
+`nahj_backend` is in production, so the design changes as little existing code as possible (decision 21).
+
+- **Source of truth stays as it is:** `user_subscription.expired_at` (one active row per user) and `users.user_type`. The existing store flows (`OrderProcess`, restore, the expiry job) are not rewritten.
+- **New code beside it:** marketplace grants and refunds run in new functions that update the same two places, inside one transaction with a lock on the user row.
+- **VIP periods on orders:** marketplace orders, and store VIP orders completed after the release, record their real period in `orders.start_time` / `end_time` with `duration_days`. That is what lets a refund remove exactly one order's unused time.
+
+This gives the same results as the earlier "orders are the source of truth" design, because VIP time always stacks at the end. A purchase never moves an earlier period, so removing one order's unused seconds from `expired_at` equals recomputing from all orders.
 
 ### 2.2 Changes to `orders`
 
 ```sql
+-- Added with ALGORITHM=INSTANT (no table copy); see script/nahj_modification.sql
 ALTER TABLE orders
-  ADD COLUMN source           VARCHAR(16)  NOT NULL DEFAULT 'store',  -- store | marketplace | admin
-  ADD COLUMN source_ref       VARCHAR(64)  NULL,                      -- e.g. marketplace unit ID
-  ADD COLUMN item_category    VARCHAR(32)  NOT NULL DEFAULT '',       -- vip_pass, gems, ...
-  ADD COLUMN duration_days    INT          NULL,                      -- copied from the item at completion
-  ADD COLUMN is_lifetime      TINYINT(1)   NOT NULL DEFAULT 0,
-  ADD COLUMN refunded_at      DATETIME(3)  NULL,
-  ADD COLUMN refunded_days    INT          NULL,                      -- whole days removed (see 2.5)
-  ADD COLUMN refunded_seconds BIGINT       NULL,                      -- exact time removed
-  ADD KEY idx_user_vip (user_id, item_category, status, end_time);
+  ADD COLUMN source           VARCHAR(16) NOT NULL DEFAULT 'store',  -- store | marketplace | admin
+  ADD COLUMN source_ref       VARCHAR(64) NULL,   -- marketplace unit id, Google order id, Apple transaction id
+  ADD COLUMN duration_days    INT         NULL,   -- set when start_time/end_time hold the real VIP period
+  ADD COLUMN refunded_at      DATETIME(3) NULL,
+  ADD COLUMN refunded_seconds BIGINT      NULL,   -- unused VIP time removed
+  ADD COLUMN agent_code       VARCHAR(16) NULL;   -- flow B (section 6)
+ALTER TABLE orders ADD INDEX idx_user_start (user_id, start_time), ALGORITHM=INPLACE, LOCK=NONE;
 -- client_order_id is already UNIQUE: it is the idempotency key.
 ```
 
-Fixes to existing code that writes `orders`:
+No backfill. Older orders keep `start_time = end_time = create time` and `duration_days = NULL`.
 
-- `start_time` and `end_time` must hold the real VIP period. Today both are set to the insert time.
-- `amount` must hold the price. Today it is 0, and the price is written into `currency`.
+### 2.3 Adding time
 
-### 2.3 Adding time: one transaction
-
-The same function serves store purchases, marketplace units and admin gifts.
+**Marketplace or admin grant** (new function, one transaction):
 
 ```sql
 START TRANSACTION;
-
--- 1. Serialize all VIP changes for this user.
-SELECT id FROM users WHERE id = :user_id FOR UPDATE;
-
--- 2. Idempotency: the same source never adds time twice.
-SELECT * FROM orders WHERE client_order_id = :client_order_id;
---    If it exists and is COMPLETED, return its result unchanged and stop.
-
--- 3. Current end of VIP time.
-SELECT MAX(end_time) AS current_end
-FROM orders
-WHERE user_id = :user_id
-  AND item_category = 'vip_pass'
-  AND status = 'COMPLETED'
-  AND end_time > UTC_TIMESTAMP(3);
-
--- 4. New period: start at the end of current time, or now.
---    start = GREATEST(now, IFNULL(current_end, now))
---    end   = start + duration_days * 24 hours
-INSERT INTO orders (client_order_id, user_id, item_id, item_category, source, source_ref,
-                    duration_days, is_lifetime, amount, currency, status, start_time, end_time, ...)
-VALUES (...);
-
--- 5. Compatibility copy for the current apps.
---    One active VIP row in user_subscription with expired_at = new end;
---    users.user_type = 3 (VIP).
-
+SELECT id, user_type FROM users WHERE id = :user_id FOR UPDATE;      -- serialize this user's VIP changes
+SELECT * FROM orders WHERE client_order_id = :client_order_id;       -- same id: replay or 409
+SELECT * FROM user_subscription WHERE user_id = :user_id AND status = 1 AND expired_at > now;
+--   Lifetime holder (more than 50 years left, configurable) and rejectIfLifetime: refuse.
+--   start = GREATEST(now, expired_at of the active VIP row), or now if there is none
+--   end   = start + duration_days * 24 hours
+--   Active VIP row: expired_at = end.  Active No-Ads row: suspend it and insert a VIP row (as OrderProcess does).
+--   No row: insert a VIP row.
+UPDATE users SET user_type = 3 WHERE id = :user_id;
+INSERT INTO orders (client_order_id, source, source_ref, item_id, user_id, amount, currency,
+                    status, start_time, end_time, duration_days, result, ...)
+VALUES ('mk-unit-5012', 'marketplace', '5012', ..., 'COMPLETED', :start, :end, 30, ...);
 COMMIT;
 ```
 
+**Store purchase** (existing `OrderProcess`, unchanged): it extends `expired_at` as today. Right after it succeeds, one added call saves the period on the order: `end` = the new VIP expiry, `start = end − duration`, `duration_days`, and `source_ref` = Google order id or Apple transaction id.
+
 Example (Monthly = 30 days):
 
-| Event | Order row | `start_time` | `end_time` | User expiry |
+| Event | Order | `start_time` | `end_time` | `user_subscription.expired_at` |
 | --- | --- | --- | --- | --- |
-| Jan 1, buys Monthly in the store | `store-GPA.123` | Jan 1 | Jan 31 | Jan 31 |
+| Jan 1, buys Monthly in the store | store, GPA.123 | Jan 1 | Jan 31 | Jan 31 |
 | Jan 10, redeems a marketplace code | `mk-unit-5012` | Jan 31 | Mar 2 | Mar 2 |
 | Jan 20, buys Lifetime on the web | `mk-unit-5101` | Mar 2 | Mar 2, 2126 | Mar 2, 2126 · Lifetime |
 
-Rules that come from this:
-
 - **Unused codes:** nothing is written to `nahj` until a code is redeemed, so a code's days start at redemption.
-- **Lifetime holder:** a user has an active order with `is_lifetime = 1`, status `COMPLETED`, and `end_time > now`. The marketplace asks this before a direct activation or redeem and refuses if true.
-- **Concurrency:** the `users` row lock in step 1 means two purchases for the same user can never read the same `current_end`.
+- **Lifetime holder:** the active VIP row has more than 50 years left (setting). No extra column is needed.
+- **Concurrency:** grants and refunds lock the `users` row. The existing store flow does not take the lock, so a store purchase and a marketplace grant for the same user in the same instant could still race. That risk is accepted to avoid changing the store flow.
 
 ### 2.4 Reading access
 
 ```sql
-SELECT MAX(end_time) AS expires_at, MAX(is_lifetime) AS lifetime
-FROM orders
-WHERE user_id = :user_id AND item_category = 'vip_pass'
-  AND status = 'COMPLETED' AND end_time > UTC_TIMESTAMP(3);
+SELECT expired_at, plan_id FROM user_subscription
+WHERE user_id = :user_id AND status = 1 AND plan_category = 'vip_pass' AND expired_at > UTC_TIMESTAMP(3);
 ```
 
-The access projection endpoint returns this, plus a projection version. The expiry job reads it too, instead of trusting `user_subscription`.
+The status endpoint returns `{active, expiresAt, lifetime}` from this row.
 
 ### 2.5 Removing time on refund or chargeback
 
-Only the order's **unused** time is removed, and later orders move earlier by that amount (decision of 2026-10-20).
+Only the order's **unused** time is removed, and later orders with a recorded period move earlier by that amount (decision of 2026-10-20). Used for marketplace refunds, Apple refund notifications and Google voided purchases.
 
 ```sql
 START TRANSACTION;
 SELECT id FROM users WHERE id = :user_id FOR UPDATE;
-SELECT * FROM orders WHERE client_order_id = :client_order_id FOR UPDATE;
---   If already REFUNDED, return the stored result (idempotent).
+SELECT * FROM orders WHERE id = :order_id FOR UPDATE;   -- refunded_at already set: return the stored result
 
--- unused = end_time - GREATEST(start_time, now)   (0 if the order has ended)
--- Case A: the order has not started yet (queued) → all of it is unused.
--- Case B: the order is running → it now ends at now.
--- Case C: the order has ended → unused = 0, nothing moves.
+-- Order with a recorded period (duration_days NOT NULL):
+--   unused = GREATEST(0, end_time - GREATEST(start_time, now))
+-- Older store order without a period:
+--   unused = LEAST(duration of the item, time left on the active VIP row)
 
-UPDATE orders
-SET status = 'REFUNDED', refunded_at = now,
-    refunded_seconds = :unused, refunded_days = CEIL(:unused / 86400),
-    end_time = end_time - INTERVAL :unused SECOND
+UPDATE orders SET status = 'REFUNDED', refunded_at = now, refunded_seconds = :unused,
+                  end_time = end_time - INTERVAL :unused SECOND
 WHERE id = :order_id;
 
--- Every VIP order queued after it moves earlier by the same amount.
-UPDATE orders
-SET start_time = start_time - INTERVAL :unused SECOND,
-    end_time   = end_time   - INTERVAL :unused SECOND
-WHERE user_id = :user_id AND item_category = 'vip_pass' AND status = 'COMPLETED'
-  AND start_time >= :refunded_order_original_end;
+UPDATE orders SET start_time = start_time - INTERVAL :unused SECOND,
+                  end_time   = end_time   - INTERVAL :unused SECOND
+WHERE user_id = :user_id AND duration_days IS NOT NULL AND status = 'COMPLETED'
+  AND start_time >= :original_end;
 
--- Recompute the compatibility copy (user_subscription, user_type).
+UPDATE user_subscription SET expired_at = expired_at - INTERVAL :unused SECOND WHERE id = :active_vip_row;
+--   If that leaves no VIP time: move the row to history, delete it, and set user_type 3 to 1.
 COMMIT;
 ```
 
@@ -147,9 +128,10 @@ Example, continuing 2.3. The store Monthly is refunded on Jan 15:
 
 | Order | Before | After |
 | --- | --- | --- |
-| `store-GPA.123` | Jan 1 – Jan 31 | REFUNDED, Jan 1 – Jan 15 (16 days removed) |
+| GPA.123 | Jan 1 – Jan 31 | REFUNDED, Jan 1 – Jan 15 (16 days removed) |
 | `mk-unit-5012` | Jan 31 – Mar 2 | Jan 15 – Feb 14 |
 | `mk-unit-5101` (Lifetime) | Mar 2 – Mar 2, 2126 | Feb 14 – Feb 14, 2126 |
+| `user_subscription.expired_at` | Mar 2, 2126 | Feb 14, 2126 |
 
 ### 2.6 Internal endpoints that use this
 
@@ -158,7 +140,7 @@ Example, continuing 2.3. The store Monthly is refunded on Jan 15:
 | `POST /internal/v1/vip/grants` | 2.3, with `client_order_id = "mk-unit-{unit_id}"` |
 | `POST /internal/v1/vip/grants/{client_order_id}/refund` | 2.5 |
 | `GET /internal/v1/vip/{user_id}` | 2.4 and the Lifetime-holder flag |
-| `GET /internal/v1/vip/{user_id}/orders` | List of VIP orders for history and Support |
+| `GET /internal/v1/vip/{user_id}/orders` | Orders with a recorded VIP period, for history and Support |
 
 ## 3. Marketplace tables for orders (schema `nahj_market`)
 
@@ -551,27 +533,9 @@ Store revenue itself is not in the marketplace ledger. Google and Apple pay Nahj
 
 ### 6.3 Changes in `nahj_backend` (schema `nahj`)
 
-```sql
-ALTER TABLE orders ADD COLUMN agent_code VARCHAR(16) NULL;   -- copied at completion
+`orders.agent_code` and `marketplace_outbox` are in `script/nahj_modification.sql` (section 2.2). The code is saved in `users_attributes` (`agent_code`, `agent_code_set_at`).
 
--- users_attributes keys (existing key/value table):
---   agent_code        = AGT-7K2M3P
---   agent_code_set_at = 2026-10-25T08:00:00Z
-
-CREATE TABLE marketplace_outbox (
-  id            BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-  event_type    VARCHAR(24)  NOT NULL,       -- store_sale, store_refund
-  event_key     VARCHAR(160) NOT NULL UNIQUE, -- e.g. store_sale:google:GPA.1234
-  payload       JSON         NOT NULL,
-  attempts      INT          NOT NULL DEFAULT 0,
-  next_try_at   DATETIME(3)  NOT NULL,
-  sent_at       DATETIME(3)  NULL,
-  last_error    VARCHAR(255) NULL,
-  created_at    DATETIME(3)  NOT NULL
-);
-```
-
-The outbox row is written in the **same transaction** as the order completion or refund, so an event can never be lost or sent for a purchase that did not happen.
+The store flows have no transactions, and they stay that way (decision 21). So the agent code and the `store_sale` outbox row are written together in one small transaction **right after** the existing completion succeeds. If the process dies between the two, that one sale is not reported (it is logged). An event is never sent for a purchase that did not complete. `store_refund` rows are written in the same transaction as the refund (section 2.5), for Google voided purchases and Apple refund notifications.
 
 ### 6.4 Example
 
@@ -582,5 +546,5 @@ The outbox row is written in the **same transaction** as the order completion or
 | User buys Monthly in Google Play for Rp75,000 | `nahj.orders` row with `agent_code`, VIP period; `marketplace_outbox` store_sale |
 | Event arrives | `orders` (channel store) + 1 `units` row: base price Rp75,000 (from the catalog), store rate 10%, commission Rp7,500, release in 72 h; journal `store_commission_accrued` |
 | 72 hours later, no refund | `store_commission_matured` → Available |
-| (If refunded inside 48 h) | `nahj` removes unused days; store_refund event; `store_commission_reversed`; the sale is marked refunded |
+| (If refunded) | `nahj` removes the unused time (Google voided purchase or Apple refund notification); store_refund event; `store_commission_reversed`; the sale is marked refunded |
 

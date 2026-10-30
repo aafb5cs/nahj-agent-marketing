@@ -439,7 +439,7 @@ sequenceDiagram
 | Price | The user pays the normal store price. **No discount** (UX C04: "no coupon input or discounts invented"). |
 | Commission base | **Gross, from the catalog** (changed 2026-10-25). Each plan version has `store_base_price`, an IDR price that Super Admin sets per VIP item (for example Monthly Rp75,000). The store price in the item config is in USD with no currency, so it is not used directly, and VAT and store fees are not calculated. |
 | Commission | `store_base_price × agent store rate`, rounded down to whole rupiah. The store rate (`store_commission_bps`) is separate from the web rate, so it can be set lower to allow for the store's share. Employee agents have rate 0. |
-| Currencies that earn | Configurable list, starting with `IDR`. Sales in other currencies are recorded but earn nothing. |
+| Currencies that earn | **Superseded by decision 23 (2026-10-30):** buyers and agents can be in many countries. Google does not report price or currency, only the country, so the rule becomes a configurable country allowlist (empty = all). |
 | Hold before release | Default per store: Google **3 days**, Apple **14 days**, as market settings. **Each agent's wallet can override them.** The values are copied onto the store sale when it is recorded. |
 | Refund after release | Commission is reversed. Available may go negative, and future earnings cover it, as with web sales. |
 | Self-purchase | Allowed, as for web sales. |
@@ -463,7 +463,7 @@ Journals with a zero amount are not posted. The sale and its attribution are sti
 | Direction | Endpoint |
 | --- | --- |
 | nahj_backend → marketplace | `GET /internal/v1/agent-codes/{code}` → `{valid, agentId, displayName, agentType}` |
-| nahj_backend → marketplace | `POST /internal/v1/store-sales`: `{store, storeTransactionId, originalTransactionId, userId, itemId, purchasedAt, agentCode, reportedPrice?, reportedCurrency?}` (reported price is optional, for the currency rule and reports only). Idempotent on `(store, storeTransactionId)`. |
+| nahj_backend → marketplace | `POST /internal/v1/store-sales`: `{store, storeTransactionId, originalTransactionId, userId, itemId, purchasedAt, agentCode, country, reportedPriceMilli?, reportedCurrency?}`. `country` is Google `regionCode` (ISO alpha-2) or Apple `storefront` (ISO alpha-3) as received. Price and currency come from Apple only. Idempotent on `(store, storeTransactionId)`. |
 | nahj_backend → marketplace | `POST /internal/v1/store-sales/{store}/{storeTransactionId}/refund`: `{refundedAt, reason}`. Idempotent. |
 
 `nahj_backend` authenticates with its own Keycloak service client (`nahj-backend-service`). It sends these events through a local outbox table with retries, so no event is lost when the marketplace is down.
@@ -539,22 +539,20 @@ The marketplace treats `nahj_backend` as an external provider: calls go through 
 
 ### 8.2 Grants and the access projection in `nahj_backend`
 
-Today access is one `user_subscription` row per pass plus `users.user_type`. Store VIP products are one-time passes (`durationInDays`), not auto-renewing subscriptions. The analysis (section 2) lists the current behaviour and five defects.
+Today access is one `user_subscription` row per user plus `users.user_type`. Store VIP products are one-time passes (`durationInDays`), not auto-renewing subscriptions. The analysis (section 2) lists the current behaviour and its defects.
 
-Required changes:
+`nahj_backend` is in production, so the integration **adds code beside the existing flows and changes as few existing lines as possible** (decision 21, revised 2026-10-30). Details: `03-database-design.md` §2; tasks: `docs/prompts/01-…` and `02-…`.
 
-- **Per-purchase records in the existing `orders` table** (confirmed): every source of VIP time is one order with `source` (`store`, `marketplace`, `admin`, `legacy`). `client_order_id` is the unique source reference; for a marketplace unit it is the unit ID. Add `duration_days`, the real VIP `start_time` and `end_time`, correct `amount` and `currency`, `refunded_at` and `refunded_days`.
-- **Grant** = an internal endpoint that runs the existing initiate-and-complete logic (`OrderProcess`) in one transaction, idempotent on `client_order_id`.
-- **Rules** (confirmed; analysis §2.3):
-  - days × 24 hours;
-  - new time starts at the end of current VIP time, or now;
-  - a code's days start at redemption.
-- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the assumed window is 48 hours after activation (catalog setting `refund_window_hours`, snapshotted on the order); unused codes are refundable for 30 days after payment (catalog setting `unused_refund_days`); a code's commission is released only after it is redeemed or that period ends; store purchases follow Google and Apple rules. A refund or chargeback subtracts the order's unused days, `max(0, end_time − max(start_time, now))`, and moves the user's later orders earlier by the same amount. Chargebacks cannot be refused, and under this rule a late chargeback never cuts a newer purchase.
-- **Lifetime** is subscription time: the one-time item `vip_pass_lifetime`, kept at 36,500 days (100 years) to avoid misleading-naming risk. It is shown with its real date, for example "Lifetime · until 20 Oct 2126". While an account has an active `is_lifetime` order, it cannot directly activate or redeem more VIP for itself, but can buy codes for others.
-- **Compatibility cache**: after every change, write `user_subscription` (the computed expiry) and `users.user_type`, so the existing apps keep working.
-- **No-Ads is removed** (confirmed 2026-10-21): ads were removed from the game, so No-Ads has no value. No migration is needed. Remaining No-Ads rows are left to expire, and `user_type` 2 is no longer written.
-- **Defects to fix**: the expiry job never resets `user_type` for existing users; the store refund handler resets `user_type` without revoking the specific purchase and crashes when no order is found; the flows have no transactions or unique constraints.
-- **The apps refresh the projection** on sign in, on resume and when a push hint arrives.
+- **Source of truth unchanged:** `user_subscription.expired_at` and `users.user_type`. `OrderProcess`, restore and the expiry job are not rewritten.
+- **Grant:** a new internal endpoint and function, in one transaction with a lock on the user row, idempotent on `client_order_id` (`mk-unit-{unitId}`). It extends or creates the VIP row the same way a store purchase does and records the order with its real VIP period.
+- **Store VIP periods:** one added call after a successful store completion saves the period, duration and store transaction ID on the order.
+- **Rules** (confirmed; analysis §2.3): days × 24 hours; new time starts at the end of current VIP time, or now; a code's days start at redemption.
+- **Refund** (confirmed): early refunds are accepted and late refunds are refused; the assumed window is 48 hours after activation (catalog setting `refund_window_hours`, snapshotted on the order); unused codes are refundable for 30 days after payment (catalog setting `unused_refund_days`); a code's commission is released only after it is redeemed or that period ends; store purchases follow Google and Apple rules. A refund or chargeback removes only the order's unused time, `max(0, end_time − max(start_time, now))`, from `expired_at` and moves later recorded orders earlier by the same amount. Older store orders without a recorded period remove `min(duration, time left)`.
+- **Store refunds:** Google voided purchases and **Apple refund notifications** (new endpoint for App Store Server Notifications V2, decision 22) use the same refund function.
+- **Lifetime** is subscription time: the one-time item `vip_pass_lifetime`, kept at 36,500 days (100 years) to avoid misleading-naming risk. It is shown with its real date, for example "Lifetime · until 20 Oct 2126". An account whose VIP row has more than 50 years left (setting) is a Lifetime holder: it cannot directly activate or redeem more VIP for itself, but can buy codes for others.
+- **No-Ads is removed** (confirmed 2026-10-21): no new No-Ads logic; existing No-Ads code stays untouched.
+- **Existing defects not fixed in these tasks** (separate, small changes when the business decides): the expiry job never resets `user_type`; store receipts are not checked for reuse; the Google refund handler crashes when the order is not found by purchase token.
+- **The apps refresh** on sign in, on resume and when a push hint arrives.
 
 ## 9. Background jobs
 
@@ -651,7 +649,7 @@ Fulfillment is **instant at payment** (decision 17, 2026-10-23). The 30-minute s
 | 4 | Step-up MFA for sellers: Keycloak TOTP re-authentication | Recommended | Backend, Keycloak setup |
 | 5 | Payment providers: multi-provider with routing (§6.8); launch with Midtrans and Xendit | Decided 2026-10-23; contracts and quotes pending | Payment adapters, refund mechanism, settlement timestamp |
 | 6 | Payout provider: same multi-provider design; Xendit recommended for payouts | Recommended; pending quotes | Wallet adapter, fees, refund payouts |
-| 7 | Entitlement contract: one order per purchase in the existing order flow; days × 24 h; stack at end; codes start at redemption; refund subtracts the order's days; no new offline grace (§8.2) | Confirmed 2026-10-20 (refund removes unused days; early refunds only) | Game backend, mobile apps |
+| 7 | Entitlement contract: days × 24 h; stack at end; codes start at redemption; refund removes the order's unused time; no new offline grace (§8.2). Implemented beside the existing flows (decision 21). | Confirmed 2026-10-20; implementation revised 2026-10-30 | Game backend, mobile apps |
 | 8 | Code and order reference formats | Open | Backend, copy |
 | 9 | Languages for V1 | Open; translation layer from day one | Frontend, emails |
 | 10 | Queue technology: MySQL-backed outbox and jobs; no broker in V1 | Decided | Operations |
@@ -665,6 +663,9 @@ Fulfillment is **instant at payment** (decision 17, 2026-10-23). The 30-minute s
 | 20 | Agent types: partner and employee (0% commission, no referral rewards, no wallet, hidden from directory by default) | Confirmed 2026-10-25 | Sellers, ledger, directory |
 | 16 | Refund windows: 48 h after activation (per plan); unused codes 30 days after payment; code commission released at redemption or period end. All configurable. | Confirmed 2026-10-21 | Catalog, refund, ledger |
 | 13 | Withdrawal approval: every withdrawal through Finance; second approver above a threshold | Decided (UX A11) | Wallet |
+| 21 | `nahj_backend` is in production: add code beside the existing store flows and change as few existing lines as possible. `user_subscription` and `user_type` stay the source of truth; orders record VIP periods for refunds; the migration only adds columns (INSTANT), one online index and the outbox table, with no backfill | Confirmed 2026-10-30 | nahj_backend tasks 01 and 02 |
+| 22 | Apple refunds are handled: new App Store Server Notifications V2 endpoint; a refund removes the order's unused time and reports `store_refund` for agent sales. Google voided purchases use the same function instead of resetting `user_type` | Confirmed 2026-10-30 | nahj_backend, App Store Connect setup, ledger |
+| 23 | Many countries: buyers and agents can be anywhere; app-store sales (Google Play, Apple) through agent referral are a main channel. `nahj_backend` reports the store's country and, for Apple, price and currency. Marketplace design to follow: commission base per payout currency instead of one IDR price, wallet currency per agent, country allowlist instead of earning currencies, payout providers outside Indonesia | Confirmed 2026-10-30; marketplace design open | Catalog, sellers, wallet, payouts |
 
 ## 14. Build order
 

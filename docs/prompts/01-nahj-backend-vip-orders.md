@@ -1,141 +1,198 @@
-# Task for nahj_backend: per-purchase VIP time and internal endpoints for the seller marketplace
+# Task for nahj_backend: marketplace VIP grants, store VIP periods, and store refunds
 
 > Paste this whole file as the first message of a new Claude Code session opened in `D:\code\go\nahj\develop\nahj_backend`.
-> Before writing any code, produce an implementation plan and wait for approval (see section 9).
+> Before writing any code, produce an implementation plan and wait for approval (see section 10).
+
+## 0. The most important rule: this service is in production
+
+`nahj_backend` serves the live Android and iOS apps. **Add new code beside the existing flows. Change as few existing lines as possible.**
+
+- Do **not** rewrite, restructure or "clean up" `OrderProcess`, `OrderRestoreProcess`, `RestoreOrder`, `InitOrder`, `CompleteMoneyOrder`, `RealTimeDeveloperNotification`, `background/subscribtion.go`, `utis.GetNow` or any other existing function, except for the exact edits listed in section 6.
+- Do not fix other bugs you find. List them in the report instead (section 10). Some known ones are in section 3.2.
+- Every edit to an existing file must be small and easy to review on its own.
+- The current mobile apps must keep working unchanged, and all existing response shapes stay identical.
 
 ## 1. Context
 
-A new project, the **Nahj Seller Marketplace** (repo `agent_marketing`), lets approved sellers in Indonesia sell prepaid VIP passes on the web, either as direct activation on the buyer's account or as activation codes. It is a separate Go service with its own MySQL schema (`nahj_market`). It never reads or writes the `nahj` schema. It changes VIP access **only** through new internal endpoints in this repo.
+A new project, the **Nahj Seller Marketplace** (repo `agent_marketing`), lets approved sellers sell prepaid VIP passes on the web, either as direct activation on the buyer's account or as activation codes. It is a separate Go service with its own MySQL schema (`nahj_market`). It never reads or writes the `nahj` schema. It changes VIP access **only** through new internal endpoints in this repo.
 
-Today this repo stores VIP access as one `user_subscription` row per user plus `users.user_type`. A buyer may have several purchases (store passes, marketplace codes, admin gifts), and one of them can be refunded without touching the others. That cannot be done with one expiry date. This task makes **every source of VIP time one row in the existing `orders` table with its exact VIP period**. VIP access is then calculated from those rows, and `user_subscription` and `user_type` are kept as a compatibility copy.
+This task adds:
 
-Read this repo's `CLAUDE.md` first and follow its conventions: layering `contr/` → `svc/` → `utis/`, i18n error keys in all three locales, logging prefixes, swag annotations, `utis.GetNow()`.
+1. **Internal endpoints** so the marketplace can grant and refund VIP time.
+2. **The VIP period on store VIP orders**, so one purchase can be refunded without touching the others.
+3. **Store refunds that remove only the unused time:** a new Apple refund notification endpoint, and the same logic for Google voided purchases.
 
-Reference design (in the marketplace repo; ask the user if you need it): `docs/03-database-design.md` §2, and `docs/02-system-analysis.md` §2–3.
+Read this repo's `CLAUDE.md` first and follow its conventions: layering `contr/` → `svc/` → `utis/`, i18n error keys in all three locales, logging prefixes, swag annotations.
+
+Reference design (in the marketplace repo; ask the user if you need it): `docs/03-database-design.md` §2.
 
 ## 2. Confirmed business rules (do not change them)
 
-1. **One row per purchase.** Every source of VIP time is one `orders` row: store purchase, marketplace unit, admin gift, or a legacy backfill row.
+1. **Source of truth stays as it is:** `user_subscription.expired_at` (one active row per user) and `users.user_type`. Nothing else decides VIP access.
 2. **Duration.** An item grants `durationInDays × 24 hours`. Monthly = 30 days, never a calendar month.
 3. **Stacking.** New time starts at the end of the user's current VIP time, or now if they have none. Example: Monthly bought Jan 1 and another Monthly Jan 10 → VIP until Mar 2.
 4. **Codes.** Time is added only when a code is redeemed. The marketplace calls the grant endpoint at that moment.
-5. **Refund or chargeback** removes only the order's **unused** time: `unused = max(0, end_time − max(start_time, now))`. Every VIP order of that user queued after it moves earlier by `unused`. An order that has already ended removes nothing.
-6. **Lifetime** is the existing item `vip_pass_lifetime` (36,500 days). It is normal subscription time and stacks like any other pass. A user is a **Lifetime holder** while they have a `COMPLETED`, non-refunded order with `is_lifetime = 1` and `end_time > now`. A Lifetime holder must not get more VIP added to their own account through the marketplace (see the `rejectIfLifetime` flag in §5.2).
-7. **No-Ads is discontinued.** Do not add new No-Ads logic. Existing No-Ads code paths may stay but must not break.
+5. **Refund or chargeback** removes only the order's **unused** time: `unused = max(0, end_time − max(start_time, now))`, subtracted from `expired_at`. Every order of that user with a recorded period that starts at or after the refunded order's original end moves earlier by `unused`. An order that has already ended removes nothing.
+6. **Lifetime** is the existing item `vip_pass_lifetime` (36,500 days). A user is a **Lifetime holder** while the active VIP row has more than `marketplace.lifetimeThresholdYears` (default 50) years left. A Lifetime holder must not get more VIP added through the marketplace when the request sets `rejectIfLifetime`.
+7. **No-Ads is discontinued.** Do not add No-Ads logic. Existing No-Ads code stays as it is.
 8. **No offline grace period** is added.
-9. **Compatibility.** The current mobile apps must keep working unchanged: keep the `user_subscription` row and `users.user_type` in sync after every change, and keep all existing response shapes (`models.CompleteOrderResult`).
 
-## 3. Current state (verify each point in code before relying on it)
+## 3. Current state (verified 2026-10-30; confirm each point before relying on it)
+
+### 3.1 Facts this task builds on
 
 | Fact | Where |
 | --- | --- |
-| `vip_pass` passes are one-time products with `durationInDays` in the item config. Items: `vip_pass_weekly` 7, `vip_pass_monthly` 30, `vip_pass_6month` 180, `vip_pass_yearly` 365, `vip_pass_lifetime` 36500, `vip_test_pack` 1. | `items` table, `GET /v1/shop/products?category=vip_pass` |
-| `OrderProcess` extends the single active `user_subscription.expired_at` for VIP-on-VIP, and suspends the other category. | `svc/shop.go` `OrderProcess` |
-| `InsertOrder` is called with `start_time = end_time = now`. `InitOrder` passes `0` as the amount and `order.Price` into the `currency` argument. | `svc/shop.go` around `InitOrder` and `CompleteMoneyOrder`; `utis/db_shop.go` `InsertOrder` |
-| `orders.client_order_id` is UNIQUE. The completed result JSON is stored on the order and replayed on a repeated complete. | `utis/db_shop.go`, `svc/shop.go` |
-| Expiry job bug: `if user != nil { …; continue }` runs before the `user_type` reset, so existing users never get reset. It runs every 12 h. | `background/subscribtion.go` |
-| Google voided-purchase handler sets `user_type = Registered` without touching the subscription or other purchases, and dereferences `order` when it is nil. | `svc/shop.go` `RealTimeDeveloperNotification` |
-| Apple restore uses `user_subscription.purchase_token` (Apple original transaction ID) for idempotency. | `svc/shop.go` `RestoreOrder`, `OrderRestoreProcess` |
-| No DB transactions or row locks in these flows. | — |
-| The other code checks `user.UserType == int(models.UserTypeVIP)` to decide VIP. | across `svc/` |
+| VIP passes are one-time items with `durationInDays` in `item.Config`: weekly 7, monthly 30, 6month 180, yearly 365, lifetime 36500, test pack 1. | `items` table |
+| `OrderProcess`, `vip_pass` branch: with an active VIP row it extends `expired_at` by the duration; with an active No-Ads row it suspends it and inserts a VIP row; otherwise it inserts a VIP row. Then it sets `user_type = 3` and starts `UpdateUserVIPTracking`. `result.VIPExpiry` is the new expiry. | `svc/shop.go` ~1861 |
+| `GetActiveUserSubscriptionByUserID` returns the row with `status = 1 AND expired_at > now`. | `utis/db_subscribtion.go` |
+| `CompleteMoneyOrder` (the app's complete call) verifies with Google (`res.OrderID` is the `GPA.…` order id) or Apple (`verifyRes.TransactionID`, `OriginalTransactionID`), calls `OrderProcess`, then saves the result with `UpdateOrderResultAndStatusByID`. A repeated call returns the stored result. | `svc/shop.go` ~1260 |
+| Google `OneTimeProductNotification` is a **second completion path**: it can complete the same order through `OrderProcess`, then `UpdateOrderResultByID`. | `svc/shop.go` `RealTimeDeveloperNotification` |
+| Google `VoidedPurchaseNotification` has `PurchaseToken` and `OrderID`. The handler looks the order up by purchase token, sets `REFUNDED`, sends an FCM push, and for `vip_pass` sets `user_type = Registered` (which removes all VIP, not only this purchase). The app's complete call never stores the purchase token, so the lookup usually finds nothing, and the code then dereferences a nil `order`. | same function |
+| **Apple refund notifications are not handled anywhere.** There is no App Store Server Notifications endpoint. | — |
+| Orders are inserted with `start_time = end_time = now`. These columns are not read anywhere for money orders. `UpdateOrderTime` exists. | `utis/db_shop.go` |
+| No existing query uses `SELECT *` on `orders`, so new columns do not affect existing reads. | `utis/db_shop.go` |
+| `VerifyToken` checks only the RS256 signature and `exp`; `getTokenClaims` reads claims without verification. | `contr/uti.go` |
+| `script/db.sql` is partial and outdated (no `orders`, `items`, `user_subscription`, `users_attributes`). | `CLAUDE.md` |
+| The production container has no `TZ`, so `loc=Local` in the DSN means UTC there. A developer PC may not be UTC. | `Dockerfile`, `config/conf.yml` |
 
-## 4. Schema changes
+### 3.2 Known bugs that this task must NOT fix (list them in the report)
+
+- The expiry job never resets `user_type` for existing users (`if user != nil { …; continue }` in `background/subscribtion.go`).
+- Store receipts are not checked for reuse across orders (Google: `ObfuscatedExternalAccountId` is not compared with the order; Apple: product and transaction reuse are not checked).
+- `CompleteMoneyOrder` without a prior init inserts a `COMPLETED` row and then dereferences a nil `order`.
+- On Android, the order is set to `COMPLETED` before `OrderProcess` runs.
+
+## 4. Schema
 
 **The SQL is already written, tested and applied to the local database. Do not write your own.** It is `script/nahj_modification.sql` in the marketplace repo (`D:\code\go\nahj\develop\agent_marketing\script\nahj_modification.sql`).
 
-- It covers this task **and** task 02: the new `orders` columns (including `agent_code`), the `idx_user_vip` index, the `marketplace_outbox` table, and both backfills below.
-- It is idempotent: every column, index and table is added only if missing, and the backfill skips rows it already created.
-- It was run twice on MySQL 8.4 and is applied to the local `nahj` database (Docker container `mysql8-container`, `127.0.0.1:3306`, user `root`, password `root`).
+- It covers this task **and** task 02. It only adds things:
+  - six columns on `orders` (`source`, `source_ref`, `duration_days`, `refunded_at`, `refunded_seconds`, `agent_code`), with `ALGORITHM=INSTANT`;
+  - one index `idx_user_start (user_id, start_time)`, online;
+  - the `marketplace_outbox` table.
+- There is no backfill. It is idempotent.
+- It is applied to the local `nahj` database (Docker container `mysql8-container`, `127.0.0.1:3306`, user `root`, password `root`).
+- The current production code keeps working with these columns present, so the script can run before the deploy.
 
-Copy it into this repo as `script/migrations/20261029_marketplace.sql`, unchanged, so the repo records what was applied. If you find something in it that is wrong for this code, stop and report it instead of changing it silently.
+Copy it into this repo as `script/migrations/20261030_marketplace.sql`, unchanged. If you find something wrong in it, stop and report it instead of changing it.
 
-For reference, the `orders` changes are:
+**Timezone: UTC.** Write times with `utis.GetNow()`. The internal API returns RFC 3339 timestamps with an offset. Use `loc=UTC` in the test DSN. Do not change the production DSN; just state the assumption that production runs in UTC.
 
-```sql
-ALTER TABLE orders
-  ADD COLUMN source           VARCHAR(16)  NOT NULL DEFAULT 'store',  -- store | marketplace | admin | legacy
-  ADD COLUMN source_ref       VARCHAR(64)  NULL,
-  ADD COLUMN item_category    VARCHAR(32)  NOT NULL DEFAULT '',
-  ADD COLUMN duration_days    INT          NULL,
-  ADD COLUMN is_lifetime      TINYINT(1)   NOT NULL DEFAULT 0,
-  ADD COLUMN refunded_at      DATETIME(3)  NULL,
-  ADD COLUMN refunded_seconds BIGINT       NULL,
-  ADD KEY idx_user_vip (user_id, item_category, status, end_time);
-```
+## 5. New code (new files only)
 
-The backfill (already in the script):
+Put the logic in `svc/vip.go` and the SQL in `utis/db_vip.go`. Each function below runs in **one** sqlx transaction, and locks in this order: the `users` row first, then the order. Use a package variable `var vipNow = utis.GetNow` so tests can control the clock; do not change `utis.GetNow`.
 
-- For `item_category`: set it from `items.item_category` for existing orders.
-- For every **active** VIP `user_subscription` row: insert a `legacy` order with `client_order_id = 'legacy-sub-{id}'`, `start_time = now`, `end_time = expired_at`, `item_category = 'vip_pass'`, `duration_days = CEIL(remaining days)`, and `is_lifetime = 1` if the plan is `vip_pass_lifetime`. This makes current VIP users' time visible to the new calculation. Skip a row if its `legacy-sub-{id}` order already exists.
+### 5.1 `GrantVipTime` (marketplace and admin)
 
-**Timezone: UTC.** `utis.GetNow()` already returns `time.Now().UTC()`, and the script uses `UTC_TIMESTAMP(3)`. Confirm the DSN `loc` and `parseTime` settings keep values in UTC when read back, and state it in the plan. The internal API must return RFC 3339 timestamps with an offset.
+Input: `userID`, `clientOrderID`, `itemID`, `source` (`marketplace` or `admin`), `sourceRef`, `amount`, `currency`, `rejectIfLifetime`.
 
-## 5. Core service
-
-Create `svc/vip.go` and `utis/db_vip.go`. All functions run inside one sqlx transaction.
-
-### 5.1 `AddVipTime`
-
-Input: `userID`, `clientOrderID`, `itemID`, `source`, `sourceRef`, `amount`, `currency`, `rejectIfLifetime bool`.
-
-1. `SELECT id FROM users WHERE id = ? FOR UPDATE`. A missing user → error `USER_001`. An anonymous user (`user_type = 0`) → a new error key, for example `VIP_002` "guest accounts cannot receive VIP".
+1. `SELECT … FROM users WHERE id = ? FOR UPDATE`. Missing → `USER_001`. Guest (`user_type = 0`) → new key `VIP_002` "guest accounts cannot receive VIP".
 2. If an order with this `client_order_id` exists:
-   - `COMPLETED` with the same `user_id` and `item_id` → return the stored result (idempotent replay).
-   - Different user or item → conflict error (`VIP_003`). Never add time.
-3. If `rejectIfLifetime` and the user is a Lifetime holder → error `VIP_001` "account already has Lifetime", and add nothing.
-4. Load the item and read `durationInDays`; `is_lifetime = (itemID == vip_pass_lifetime)`. Make the Lifetime item ID a config value, not a literal scattered in code.
-5. `current_end = MAX(end_time)` over the user's `COMPLETED` `vip_pass` orders with `end_time > now`. Then `start = max(now, current_end)` and `end = start + days × 24 h`.
-6. Insert or complete the order row with `status = COMPLETED`, real `start_time` and `end_time`, `amount`, `currency`, `source`, `source_ref`, `item_category = 'vip_pass'`, `duration_days`, `is_lifetime`, and the result JSON.
-7. `SyncVipCache(tx, userID)` (§5.4).
-8. Commit, then fire side effects outside the transaction: the existing VIP tracking goroutine, and FCM.
+   - same user and item → return its stored result (idempotent replay);
+   - otherwise → `VIP_003`, HTTP 409. Never add time.
+3. Read the active subscription row. If `rejectIfLifetime` and the user is a Lifetime holder (rule 6) → `VIP_001` "account already has Lifetime", and write nothing.
+4. Load the item; it must be `vip_pass`. Read `durationInDays`.
+5. Mirror the `vip_pass` branch of `OrderProcess`, but with transaction-aware SQL:
+   - active VIP row: `start = max(now, expired_at)`, `end = start + days × 24 h`, and set `expired_at = end`;
+   - active No-Ads row: suspend it as `OrderProcess` does, and insert a VIP row with `start = now`;
+   - no row: insert a VIP row.
 
-### 5.2 `RefundVipTime`
+   Then set `user_type = 3`.
+6. Insert the order:
+   - `status = COMPLETED`, `source`, `source_ref`;
+   - real `start_time`, `end_time` and `duration_days`;
+   - `amount` and `currency` in their correct columns;
+   - `result` = the JSON of the response.
+7. Commit. Then start `UpdateUserVIPTracking(user, true)` outside the transaction.
 
-Input: `clientOrderID`, `reason`.
+### 5.2 `RecordStoreVipPeriod` (called after a store completion)
 
-1. Lock the user row (look up the order first to get the `user_id`, then lock in a consistent order: user, then order).
-2. Order missing → not found. Already `REFUNDED` → return the stored result (idempotent).
-3. `unused = max(0, end_time − max(start_time, now))`. Set `status = REFUNDED`, `refunded_at = now`, `refunded_seconds = unused`, `end_time = end_time − unused`.
-4. If `unused > 0`: shift every `COMPLETED` `vip_pass` order of the user with `start_time >= original end_time` earlier by `unused` (both `start_time` and `end_time`).
-5. `SyncVipCache`, then commit.
+Input: the order, the item, the `CompleteOrderResult`, and a `StorePurchase` struct (define it in `models/`):
 
-### 5.3 `GetVipProjection`
+| Field | Google | Apple |
+| --- | --- | --- |
+| `Store` | `google` | `apple` |
+| `TransactionID` | the order id (`GPA.…`) | the transaction id |
+| `OriginalTransactionID` | — | the original transaction id |
+| `Country` | `regionCode` | `storefront` |
+| `PriceMilli`, `Currency` | — | from the signed transaction |
+| `PurchasedAt` | from the store | from the store |
 
-Returns `{userId, active, expiresAt, lifetime, projectionVersion, evaluatedAt}`, where `expiresAt = MAX(end_time)` of `COMPLETED` `vip_pass` orders with `end_time > now`, and `lifetime` follows rule 6. `projectionVersion` can be a hash or the max order `id` plus updated time; it only needs to change whenever the result changes.
+Task 02 also uses this struct.
 
-### 5.4 `SyncVipCache`
+- Only for `vip_pass` items, and only when `result.VIPExpiry` is set: `end = *result.VIPExpiry`, `start = end − days × 24 h`.
+- `UPDATE orders SET start_time, end_time, duration_days, source = 'store', source_ref = TransactionID`.
+- If it fails: log it and return. **It must never change the response or fail the purchase.**
 
-Inside the same transaction, make the compatibility copy match the projection:
+### 5.3 `RefundVipTime`
 
-- Active VIP: exactly one `user_subscription` row with `status = active`, `plan_category = 'vip_pass'`, `expired_at = expiresAt`, `plan_id` = the item of the order that ends last. Update the existing active VIP row instead of inserting duplicates. Set `users.user_type = VIP (3)`.
-- No active VIP: no active VIP `user_subscription` row (move it to history the way the expiry job does). Set `user_type = Registered (1)`, but only if it was VIP (3) or AdsRemove (2). Never change Anonymous (0).
+Input: an order ID and a reason (`marketplace`, `google_voided`, `apple_refund`).
 
-## 6. Refactor the existing flows to use the service
+1. Lock the `users` row, then the order.
+2. If `refunded_at` is already set, return the stored result (idempotent). Do not use `status` for this: the Google handler already sets `REFUNDED` before calling you.
+3. Work out the unused time:
+   - **with a recorded period** (`duration_days` not null): `unused = max(0, end_time − max(start_time, now))`. Then set `end_time −= unused`, and shift later recorded orders (`duration_days IS NOT NULL AND status = 'COMPLETED' AND start_time >= original end`) earlier by `unused`;
+   - **older store order without a period:** `unused = min(item duration, time left on the active VIP row)`. No shift.
+4. Set `status = REFUNDED`, `refunded_at = now`, `refunded_seconds = unused`.
+5. If `unused > 0`, subtract it from the active VIP row's `expired_at`.
+6. If that leaves no VIP time:
+   - move the row to history and delete it, as the expiry job does;
+   - set `user_type = 1`, but only if it is 3; never change 0;
+   - after commit, start `UpdateUserVIPTracking(user, false)`.
 
-- **`OrderProcess`, `vip_pass` branch** (store complete): call `AddVipTime` with `source = 'store'` and the existing `client_order_id`. Keep the returned `CompleteOrderResult` shape identical (Expiry, VIPExpiry, …).
-- **`OrderRestoreProcess`** (Apple restore): keep the idempotency on Apple's original transaction ID. A restore must never add a second period for the same purchase.
-- **Google voided purchase (`RealTimeDeveloperNotification`)**: for a `vip_pass` order call `RefundVipTime` for that order only, instead of resetting `user_type`. Fix the nil-order dereference.
-- **Apple refund notifications**, if handled anywhere: same treatment.
-- **Expiry job (`background/subscribtion.go`)**: fix the `user != nil` bug. For each expired row, call `SyncVipCache` in a transaction, which downgrades `user_type` only if no other VIP order is still active. Keep history moves.
-- **No-Ads branch:** do not extend it. Make sure the refactor does not break it for any existing rows.
+### 5.4 `GetVipStatus`
+
+From the active VIP row: `{userId, active, expiresAt, lifetime, version, evaluatedAt}`. `version` is any value that changes when `expired_at` or the row changes, for example a hash of the row ID and `expired_at`.
+
+### 5.5 Apple refund notifications (new endpoint)
+
+- `POST /v1/shop/apple/notifications`, in a new file `contr/apple_notifications.go`, with the logic in svc.
+- Verify the signed payload with the `go-iap` library already in `vendor/`, including the certificate chain. Check the bundle ID against `apple.bundleId` config. Reject unverified payloads with 400.
+- `notificationType = REFUND`: decode the signed transaction. Find the order by `source_ref = transactionId` and call `RefundVipTime(order, "apple_refund")`.
+  - **No matching order** (a purchase from before this release): find the user through `user_subscription.purchase_token = originalTransactionId` and the item through its Apple product ID.
+  - Insert an order row `client_order_id = "apple-refund-{transactionId}"` (`source = store`, `REFUNDED`) as the idempotency key, and remove `min(duration, time left)`.
+  - If neither the order nor the user can be found, log it and return 200.
+- **Other types** (including `REFUND_REVERSED`, `CONSUMPTION_REQUEST`, `TEST`): log them and return 200. Do not grant anything back.
+- Always return 200 after a verified payload is handled or ignored, so Apple does not retry forever.
+- In the report, say what the user must set in App Store Connect (production and sandbox server notification URLs, version 2).
+
+## 6. Edits to existing files (complete list; nothing else)
+
+| File | Edit |
+| --- | --- |
+| `svc/shop.go` `CompleteMoneyOrder` | Declare one `storePurchase` variable next to `appTxId`, and fill it inside the existing Android and iOS cases. After the final `UpdateOrderResultAndStatusByID` succeeds, add `if item.ItemCategory == models.ItemCategoryVipPass { RecordStoreVipPeriod(…) }`. |
+| `svc/shop.go` `RealTimeDeveloperNotification`, one-time product branch | After `UpdateOrderResultByID` succeeds, the same `RecordStoreVipPeriod` call (Google). |
+| `svc/shop.go` `RealTimeDeveloperNotification`, voided branch | 1. If the purchase-token lookup returns nil, look up by `source_ref = notification.OrderID`. 2. If still nil, log it and `return nil` (this also removes the nil dereference). 3. In the `vip_pass` case, replace `UpdateUserStatus(…, Registered)` with `RefundVipTime(order, "google_voided")`. Leave everything else in the branch as it is. |
+| `utis/googleplay.go` | Add `RegionCode` to `PurchaseVerificationResult` and fill it. Additive only. |
+| `utis/iap.go` | Add `Price`, `Currency` and `Storefront` to `VerifiedTransaction` and fill them from the parsed transaction. Additive only. |
+| `contr/contMgr.go` | One line to register the internal route group, and one for the Apple notification route (or put that in `ShopApis`). |
+| `models/conf.go` + example configs | New `marketplace` section: `clientId`, `issuer`, `lifetimeThresholdYears`. No secrets. |
+| `locales/errors/{en,ar,id}.json` | New keys `VIP_001` to `VIP_003`, plus any internal-API keys. |
+
+The Google voided change is the only behaviour change for existing users: a refunded VIP purchase now removes only its unused time instead of all VIP. It was confirmed by the product owner on 2026-10-30. Keep it in its own commit so it can be dropped if review rejects it.
 
 ## 7. Internal endpoints for the marketplace
 
 ### 7.1 Routing and authentication
 
-- Route group `/internal/v1`, registered in `contr/contMgr.go`, in a new file `contr/internal.go`. Not shown in the public swagger, or tagged `internal`.
-- Authentication: a Keycloak **client-credentials** token from the marketplace's service client. Verify it with the existing `VerifyToken`, then require `azp` (or `client_id`) to equal the config value `marketplace.clientId`. Add the `marketplace` section to `models.Config` and to the example configs, without secrets. Reject user tokens. Write this as a small reusable Gin middleware.
+- Route group `/internal/v1`, in a new file `contr/internal.go`. Tag it `internal`, or leave it out of the public swagger.
+- Authentication: a Keycloak **client-credentials** token from the marketplace's service client. Write a small Gin middleware, used only by this group:
+  - verify the token as `VerifyToken` does;
+  - then read the claims **from the verified token**: `iss` must equal `marketplace.issuer`, and `azp` must equal `marketplace.clientId`;
+  - reject user tokens;
+  - if `marketplace.clientId` is empty, reject every request (fail closed).
 
 ### 7.2 Endpoints
 
 | Method and path | Body or result |
 | --- | --- |
 | `GET /internal/v1/accounts/{userId}` | `{userId, exists, isGuest, displayName, emailMasked}`. Read the email from Keycloak (`utis.Kcs`) if available, masked as `a***@domain`. |
-| `POST /internal/v1/vip/grants` | `{clientOrderId, userId, itemId, source: "marketplace" or "admin", sourceRef, amount, currency, rejectIfLifetime}` → `{clientOrderId, status, startTime, endTime, projection}`. Calls `AddVipTime`. |
-| `POST /internal/v1/vip/grants/{clientOrderId}/refund` | `{reason}` → `{clientOrderId, status, refundedSeconds, projection}`. Calls `RefundVipTime`. |
-| `GET /internal/v1/vip/{userId}` | Projection (§5.3). |
-| `GET /internal/v1/vip/{userId}/orders` | The user's VIP orders, newest first: `clientOrderId`, `source`, `itemId`, `startTime`, `endTime`, `isLifetime`, `status`, `refundedAt`. |
-| `POST /internal/v1/notifications` | `{userId, type: "vip_changed", title, body}` → sends an FCM push through the existing `FcmClt` using the user's FCM token. This is a refresh hint only; it never grants anything. Best effort: report `sent` or `no_token`. |
+| `POST /internal/v1/vip/grants` | `{clientOrderId, userId, itemId, source: "marketplace" or "admin", sourceRef, amount, currency, rejectIfLifetime}` → `{clientOrderId, status, startTime, endTime, vip}`. Calls `GrantVipTime`. |
+| `POST /internal/v1/vip/grants/{clientOrderId}/refund` | `{reason}` → `{clientOrderId, status, refundedSeconds, vip}`. Calls `RefundVipTime`; only for orders with `source` `marketplace` or `admin`. |
+| `GET /internal/v1/vip/{userId}` | `GetVipStatus`. |
+| `GET /internal/v1/vip/{userId}/orders` | The user's orders with a recorded period (`duration_days` not null), newest first: `clientOrderId`, `source`, `itemId`, `startTime`, `endTime`, `status`, `refundedAt`. |
+| `POST /internal/v1/notifications` | `{userId, type: "vip_changed", title, body}` → an FCM push through `FcmClt` using the user's FCM token. A refresh hint only; it never grants anything. Best effort: report `sent` or `no_token`. |
 
 Errors use the existing JSON error format with stable codes. The marketplace retries on network errors and expects idempotent replays:
 - the same `clientOrderId` with the same body returns the same result;
@@ -143,38 +200,51 @@ Errors use the existing JSON error format with stable codes. The marketplace ret
 
 The marketplace uses `clientOrderId = "mk-unit-{unitId}"`.
 
-## 8. Out of scope for this task
+## 8. Accepted limitation
 
-- Account deletion callback to the marketplace, and find-account-by-email. These come later.
-- Any change to the mobile apps.
-- Any change to store product configuration. Note it, but do not fix it: inconsistent Apple product IDs between `appleProductID` and `metadata.appleProductId` for Lifetime, Monthly and Yearly; passes typed `non-consumable`; `vip_test_pack` sellable.
+The existing store flow does not take the user row lock. A store purchase and a marketplace grant for the same user in the same instant could race on `expired_at`. This is accepted so the store flow stays unchanged. Mention it in the report.
 
-## 9. How to work
+## 9. Out of scope
 
-1. **Plan first.** Read the code listed in §3 and confirm or correct each fact. Then write the plan:
-   - files to add and change;
-   - the timezone convention;
+- Everything in section 3.2.
+- The account deletion callback to the marketplace, and find-account-by-email.
+- Any change to the mobile apps or to store product configuration. Notes for the report: Apple product IDs differ between `appleProductID` and `metadata.appleProductId` for Lifetime, Monthly and Yearly; passes are typed `non-consumable`; `vip_test_pack` is sellable.
+
+## 10. How to work
+
+1. **Plan first.** Read the code in section 3 and confirm or correct each fact. Then write the plan:
+   - new files;
+   - the exact edits from section 6, with the lines they touch;
    - the transaction and lock order;
-   - the backfill steps;
-   - risks for existing store flows;
-   - a test approach.
+   - how the Apple payload is verified;
+   - risks to existing flows;
+   - the test approach.
+
    Wait for the user's approval.
-2. Work on a branch from `develop`, for example `feature/vip-orders`, in small commits. Do not push to `main` or `develop` without the user's say-so.
-3. **Tests.** The repo has no working DB test harness (see `CLAUDE.md`). Add a minimal integration test setup that initializes `utis.Gdb` against the local MySQL (`root:root@tcp(127.0.0.1:3306)/`, read from an env var such as `NAHJ_TEST_MYSQL_DSN`, skip the tests when it is unset). Each test creates its own throwaway schema, loads `script/db.sql` plus the migration into it, and drops it afterwards; never run tests against the `nahj` database itself. Cover at least these scenarios:
-   - Stacking: Monthly Jan 1 and Monthly Jan 10 → ends Mar 2.
-   - Refund while running: refund the first on Jan 15 → it ends Jan 15, and the second runs Jan 15 → Feb 14.
-   - Late refund of an ended order → 0 removed; newer orders unchanged.
-   - Refund of a queued (not started) order → all its time removed; later orders shift by its full duration.
-   - Idempotent grant replay; conflicting replay → 409.
-   - Two concurrent grants for one user → no overlap; the periods are back to back.
-   - `rejectIfLifetime` with an active Lifetime order → refused, nothing written.
-   - `SyncVipCache` → one active row with the right expiry; `user_type` downgrade only when nothing is active; Anonymous unchanged.
-   - Store complete through the refactored `OrderProcess` returns the same response shape as before.
-   Use a controllable clock (wrap `utis.GetNow` behind a function variable that tests can override) so these dates can be tested.
-4. Run `go build`, `go vet ./svc ./utis` (compare against the known pre-existing warnings) and the tests. Regenerate swagger if you change public handler annotations.
-5. Finish with a short report:
-   - what changed;
-   - how to run the migration and the backfill;
+2. **Branch.** Work on a branch from `develop`, for example `feature/marketplace-vip`, in small commits: migration copy, new service, store hooks, Google voided change (its own commit), Apple endpoint, internal API. Do not push to `main` or `develop` without the user's say-so.
+3. **Tests**, in a new test file that skips when `NAHJ_TEST_MYSQL_DSN` is unset (for example `root:root@tcp(127.0.0.1:3306)/?parseTime=true&loc=UTC`), so a plain `go test` behaves as before.
+   - Each test creates a throwaway schema, loads the schema, initializes `utis.Gdb` against it, and drops the schema afterwards. Never use the `nahj` database itself.
+   - For the schema, dump the local `nahj` table definitions without data (`mysqldump --no-data`) into `svc/testdata/schema.sql`, then run the migration on top (it must be a no-op). Ask the user to confirm the local schema matches production.
+   - Cover at least:
+     - stacking: Monthly Jan 1 and Monthly Jan 10 → `expired_at` Mar 2;
+     - refund while running on Jan 15 → the first ends Jan 15, the second runs Jan 15 → Feb 14, `expired_at` Feb 14;
+     - late refund of an ended order → 0 removed;
+     - refund of a queued order → all its time removed, later orders shift;
+     - refund of an older store order without a period → `min(duration, time left)`;
+     - refund that leaves no VIP → row moved to history, `user_type` 3 → 1, guest (0) unchanged;
+     - idempotent grant replay; conflicting replay → 409; repeated refund → nothing more removed;
+     - two concurrent grants for one user → back-to-back periods;
+     - `rejectIfLifetime` with more than 50 years left → refused, nothing written;
+     - grant when the user has an active No-Ads row → No-Ads suspended, VIP row inserted, as `OrderProcess` does;
+     - `RecordStoreVipPeriod` sets the period from `VIPExpiry`, and a failure does not change the result;
+     - Apple notification: a refund for a known order, an unknown older purchase, a repeated notification, an unverified payload → 400;
+     - middleware: a user token, a wrong `azp`, and an empty config are all rejected.
+4. **Checks.** Run `go build`, `go vet ./svc ./utis` (compare against the known pre-existing warnings) and the tests. Regenerate swagger for the new public Apple endpoint.
+5. **Report.** Finish with a short report:
+   - what changed: new files, plus a list of every edited existing line;
+   - how to run the migration;
    - new config keys;
    - new i18n keys;
-   - anything you found that contradicts this brief.
+   - the App Store Connect setup;
+   - the bugs from section 3.2 and any others you found (not fixed);
+   - anything that contradicts this brief.
